@@ -1,12 +1,15 @@
 import type { RequestHandler } from 'express';
 import { validated } from '../middlewares/validate.js';
 import * as service from '../services/accurate-mapping.service.js';
+import * as customers from '../services/accurate-customer.service.js';
 import {
   destinationInput,
   destinationParams,
   mappingInput,
   mappingParams,
   masterQuery,
+  customerPrepareQuery,
+  customerCreateInput,
 } from '../validations/accurate.validation.js';
 export const status: RequestHandler = async (_req, res) => {
   res.json(await service.accurateStatus());
@@ -36,4 +39,25 @@ export const mapping: RequestHandler = async (req, res) => {
 };
 export const delivered: RequestHandler = async (_req, res) => {
   res.json(await service.deliveredInvoices());
+};
+export const prepareCustomer: RequestHandler = async (req, res) => {
+  const { batchId, rowId } = validated(res, mappingParams, 'params');
+  res.json(
+    await customers.prepareCustomer(
+      batchId,
+      rowId,
+      validated(res, customerPrepareQuery, 'query').version,
+    ),
+  );
+};
+export const createCustomer: RequestHandler = async (req, res) => {
+  const { batchId, rowId } = validated(res, mappingParams, 'params');
+  res.json(
+    await customers.createCustomer(
+      batchId,
+      rowId,
+      validated(res, customerCreateInput),
+      req.actor.id,
+    ),
+  );
 };

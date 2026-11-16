@@ -22,6 +22,23 @@ export interface AccurateMaster {
   suspended: boolean;
 }
 export type MasterKind = 'customer' | 'item' | 'branch';
+export interface AccurateCustomerDefaults {
+  categoryName: string;
+  branchId: number;
+  branchName: string;
+  currencyCode: string;
+  currencyName: string;
+  priceCategoryName: string;
+  discountCategoryName: string;
+  termName: string;
+}
+export type AccurateCustomerPayload = Omit<
+  AccurateCustomerDefaults,
+  'branchName' | 'currencyName'
+> & {
+  name: string;
+  customerNo: string;
+};
 export interface AccurateInvoiceResult {
   id: string;
   number: string;

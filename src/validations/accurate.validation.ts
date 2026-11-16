@@ -19,3 +19,23 @@ export const mappingInput = z
     masterId: z.string().regex(/^\d+$/).max(30),
   })
   .refine((input) => input.kind !== 'item' || !!input.itemId, 'Pilih baris item.');
+export const customerPrepareQuery = z.object({
+  version: z.coerce.number().int().positive(),
+});
+export const customerCreateInput = z
+  .object({
+    requestId: z.uuid(),
+    version: z.number().int().positive(),
+    databaseId: z.string().regex(/^\d+$/).max(30),
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(100)
+      .transform((value) => value.replace(/\s+/g, ' ')),
+    customerNo: z
+      .string()
+      .regex(/^MPA-[0-9]+$/)
+      .max(100),
+  })
+  .strict();

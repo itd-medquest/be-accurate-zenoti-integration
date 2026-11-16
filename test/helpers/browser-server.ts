@@ -34,6 +34,8 @@ const remote = new Map<
 >();
 const response = (data: unknown) =>
   new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
+const customerFixture = process.env.CUSTOMER_CREATION_FIXTURE === 'true';
+const customers = [{ id: 10, customerNo: 'MPA-99', name: 'Existing Customer' }];
 globalThis.fetch = async (input, init) => {
   const url = new URL(String(input));
   if (!url.hostname.endsWith('.accurate.id')) return originalFetch(input, init);
@@ -41,6 +43,52 @@ globalThis.fetch = async (input, init) => {
     return response({
       s: true,
       d: { database: { id: 999, alias: 'Test Company', host: 'https://public.accurate.id' } },
+    });
+  if (customerFixture && url.pathname.endsWith('/customer/save.do')) {
+    const input: Record<string, unknown> = JSON.parse(String(init?.body));
+    const customer = {
+      id: 100 + customers.length,
+      customerNo: String(input.customerNo),
+      name: String(input.name),
+    };
+    if (customers.some((row) => row.customerNo === customer.customerNo))
+      return response({ s: false, d: ['Customer number already used'] });
+    customers.push(customer);
+    return response({ s: true, r: customer });
+  }
+  if (
+    customerFixture &&
+    url.pathname.endsWith('/list.do') &&
+    /\/(customer|customer-category|branch|currency|price-category|payment-term)\/list.do$/.test(
+      url.pathname,
+    )
+  ) {
+    const kind = url.pathname.split('/').at(-2);
+    let rows: Record<string, unknown>[] = [];
+    if (kind === 'customer') {
+      const search = url.searchParams.get('filter.keywords.val')?.toLowerCase();
+      const number = url.searchParams.get('filter.no.val');
+      rows = customers.filter(
+        (row) =>
+          (!search ||
+            row.name.toLowerCase().includes(search) ||
+            row.customerNo.toLowerCase().includes(search)) &&
+          (!number ||
+            (url.searchParams.get('filter.no.op') === 'EQUAL'
+              ? row.customerNo === number
+              : row.customerNo.includes(number))),
+      );
+    } else if (kind === 'customer-category') rows = [{ id: 1, name: 'Astetic' }];
+    else if (kind === 'branch') rows = [{ id: 300, name: 'PT Mylab Prima Inovatif' }];
+    else if (kind === 'currency') rows = [{ id: 1, code: 'IDR', name: 'Indonesian Rupiah' }];
+    else if (kind === 'price-category') rows = [{ id: 1, name: 'Umum' }];
+    else if (kind === 'payment-term') rows = [{ id: 1, name: 'C.O.D' }];
+    return response({ s: true, d: rows, sp: { pageCount: rows.length ? 1 : 0 } });
+  }
+  if (customerFixture && url.pathname.endsWith('/customer/detail.do'))
+    return response({
+      s: true,
+      d: customers.find((row) => String(row.id) === url.searchParams.get('id')),
     });
   if (/\/(customer|item|branch)\/(list|detail).do$/.test(url.pathname)) {
     const master = url.pathname.includes('/branch/')

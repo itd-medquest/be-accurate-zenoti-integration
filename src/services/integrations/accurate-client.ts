@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { z } from 'zod';
 import type {
   AccurateCredentials,
+  AccurateCustomerPayload,
   AccurateInvoiceResult,
   AccurateMaster,
   AccuratePayload,
@@ -11,7 +12,12 @@ import type {
 import { HttpError } from '../../utils/http-error.js';
 
 const record = z.record(z.string(), z.unknown());
-const envelope = z.object({ s: z.boolean(), d: z.unknown().optional(), r: z.unknown().optional() });
+const envelope = z.object({
+  s: z.boolean(),
+  d: z.unknown().optional(),
+  r: z.unknown().optional(),
+  sp: z.unknown().optional(),
+});
 const text = (value: unknown) =>
   typeof value === 'string' || typeof value === 'number' ? String(value) : '';
 const object = (value: unknown): Record<string, unknown> => record.safeParse(value).data ?? {};
@@ -52,7 +58,12 @@ export class AccurateClient {
       if (secret) clean = clean.split(secret).join('[disembunyikan]');
     return clean.replace(/aat\.[\w+/=.-]+/g, '[token disembunyikan]').slice(0, 700);
   }
-  private async request(url: string, method: 'GET' | 'POST', payload?: AccuratePayload) {
+  private async request(
+    url: string,
+    method: 'GET' | 'POST',
+    payload?: AccuratePayload | AccurateCustomerPayload,
+    format: 'form' | 'json' = 'form',
+  ) {
     const timestamp = new Date().toISOString();
     const signature = createHmac('sha256', this.credentials.signatureSecret)
       .update(timestamp)
@@ -67,9 +78,20 @@ export class AccurateClient {
           Authorization: `Bearer ${this.credentials.apiToken}`,
           'X-Api-Timestamp': timestamp,
           'X-Api-Signature': signature,
-          ...(payload ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
+          ...(payload
+            ? {
+                'Content-Type':
+                  format === 'json' ? 'application/json' : 'application/x-www-form-urlencoded',
+              }
+            : {}),
         },
-        body: payload ? new URLSearchParams(payload).toString() : undefined,
+        body: payload
+          ? format === 'json'
+            ? JSON.stringify(payload)
+            : new URLSearchParams(
+                Object.entries(payload).map(([key, value]) => [key, String(value)]),
+              ).toString()
+          : undefined,
       });
     } catch {
       if (method === 'POST' && payload) throw new AccurateWriteUncertain();
@@ -155,6 +177,99 @@ export class AccurateClient {
     if (!result.id || !result.code || !result.name || result.suspended)
       throw new HttpError(422, 'Master Accurate tidak tersedia atau dinonaktifkan.');
     return result;
+  }
+  async customerSetupList(
+    profile: AccurateProfile,
+    kind:
+      'customer' | 'customer-category' | 'branch' | 'currency' | 'price-category' | 'payment-term',
+    params: Record<string, string> = {},
+  ) {
+    const url = new URL(`${profile.host}/accurate/api/${kind}/list.do`);
+    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+    const paginated = kind !== 'payment-term';
+    if (paginated) {
+      url.searchParams.set('sp.pageSize', '100');
+      url.searchParams.set('sp.sort', 'id|desc');
+    }
+    const result: Record<string, unknown>[] = [];
+    let pages = 1;
+    const seen = new Set<string>();
+    for (let page = 1; page <= pages; page++) {
+      if (paginated) url.searchParams.set('sp.page', String(page));
+      // Keep setup pagination below the vendor's burst limit.
+      await new Promise<void>((resolve) => setTimeout(resolve, 180));
+      const response = await this.request(url.href, 'GET');
+      if (!Array.isArray(response.d))
+        throw new HttpError(502, `Daftar ${kind} Accurate tidak dikenali.`);
+      if (paginated) {
+        const count = object(response.sp).pageCount;
+        // request() preserves pagination metadata from the vendor envelope.
+        if (typeof count !== 'number' || !Number.isInteger(count) || count < 0 || count > 1000)
+          throw new HttpError(
+            422,
+            'Metadata halaman Accurate tidak lengkap. Nomor customer belum dapat dipastikan.',
+          );
+        if (page === 1) pages = Math.max(1, count);
+        else if (Math.max(1, count) !== pages)
+          throw new HttpError(409, 'Daftar master Accurate berubah. Muat ulang form customer.');
+        if ((count === 0 && response.d.length) || (page < pages && response.d.length !== 100))
+          throw new HttpError(
+            422,
+            'Halaman master Accurate tidak lengkap. Muat ulang form customer.',
+          );
+      }
+      for (const value of response.d) {
+        const row = object(value);
+        const id = identifier(row.id);
+        if (!id || seen.has(id))
+          throw new HttpError(422, 'Daftar master Accurate tidak lengkap atau berulang.');
+        seen.add(id);
+        result.push(row);
+      }
+    }
+    return result;
+  }
+  async customerByNumber(profile: AccurateProfile, customerNo: string) {
+    const rows = await this.customerSetupList(profile, 'customer', {
+      'filter.no.op': 'EQUAL',
+      'filter.no.val': customerNo,
+      fields: 'id,customerNo,name',
+    });
+    const matches = rows.filter((row) => text(row.customerNo ?? row.no) === customerNo);
+    if (matches.length > 1)
+      throw new HttpError(422, 'Nomor customer Accurate tidak unik. Periksa di Accurate.');
+    return matches.length
+      ? this.masterDetail(profile, 'customer', identifier(matches[0].id))
+      : undefined;
+  }
+  async saveCustomer(profile: AccurateProfile, payload: AccurateCustomerPayload) {
+    let response: z.infer<typeof envelope>;
+    try {
+      response = await this.request(
+        `${profile.host}/accurate/api/customer/save.do`,
+        'POST',
+        payload,
+        'json',
+      );
+    } catch (error) {
+      if (error instanceof AccurateWriteUncertain)
+        throw new AccurateWriteUncertain(
+          'Hasil pembuatan customer belum pasti. Periksa hasil sebelum mencoba kembali.',
+        );
+      throw error;
+    }
+    try {
+      const id = identifier(object(response.r ?? response.d).id);
+      const customer = id
+        ? await this.masterDetail(profile, 'customer', id)
+        : await this.customerByNumber(profile, payload.customerNo);
+      if (!customer) throw new AccurateWriteUncertain();
+      return customer;
+    } catch {
+      throw new AccurateWriteUncertain(
+        'Customer dikirim tetapi belum dapat diverifikasi. Periksa hasil sebelum mencoba kembali.',
+      );
+    }
   }
   async findInvoice(
     profile: AccurateProfile,
