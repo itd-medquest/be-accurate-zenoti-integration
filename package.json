@@ -18,6 +18,7 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "db:push": "drizzle-kit push",
     "db:seed": "tsx src/db/seed.ts",
+    "db:seed:admin": "tsx src/db/seed-admin.ts",
     "demo:setup": "tsx src/db/demo-setup.ts",
     "test": "tsx --test test/*.test.ts"
   },

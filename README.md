@@ -53,6 +53,10 @@ npm run dev
 
 API tersedia di `http://localhost:4000`. Endpoint pemeriksaan layanan: `GET /api/health`. Seed membuat akun lokal dan contoh invoice simulasi; gunakan database pengembangan untuk langkah ini.
 
+### Deployment dengan database kosong
+
+Struktur database dapat dibuat dari migration di repository tanpa membawa data lokal. Untuk environment baru, jalankan migration lalu `npm run db:seed:admin` agar hanya akun super admin pertama yang dibuat, tanpa akun demo atau invoice simulasi. Panduan konfigurasi, perintah hasil build untuk runtime, dan perilaku saat seed dijalankan ulang tersedia di [panduan deployment](docs/deployment.md).
+
 ### Alternatif demo tanpa PostgreSQL
 
 Pada clone baru yang belum memiliki `.env`:
@@ -83,10 +87,12 @@ Lihat `.env.example` untuk seluruh variabel dan contoh nilainya.
 | `INTEGRATION_MODE` | Mode dasar `simulation` atau `live`; koneksi Accurate aktual dikelola secara eksplisit melalui Settings |
 | `RUN_WORKER` | `true` untuk worker dalam proses API |
 | `IMPORT_PACKAGE_TAX_POLICY` | Kebijakan alokasi pajak paket; contoh lokal menggunakan `proportional` |
-| `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD` | Akun seed lokal; password minimal 12 karakter |
+| `SEED_ADMIN_NAME`, `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD` | Nama opsional, email, dan password bootstrap admin; `db:seed:admin` hanya membuat admin pertama, password 12–128 karakter |
 | `RESEND_API_KEY`, `RESEND_FROM` | Konfigurasi pengiriman email reset password |
 
 API Token dan Signature Secret Accurate diisi melalui Settings dan disimpan terenkripsi. Simulasi tidak memerlukan API Zenoti; sumber invoice pada alur upload berasal dari PDF/Excel. Parsing PDF dan fallback OCR diproses secara lokal menggunakan dependency yang terpasang.
+
+Pemulihan password menggunakan OTP melalui Resend dan memerlukan `RESEND_API_KEY` serta `RESEND_FROM` dari domain terverifikasi untuk penerima anggota tim. Tambah pengguna saat ini memakai password awal dari admin; undangan/aktivasi melalui email belum tersedia. Lihat [hasil audit email dan OTP](docs/email-readiness.md) untuk konfigurasi, hasil pengujian, dan kebutuhan reverse proxy serta pengiriman email.
 
 File invoice sumber tersimpan secara privat di `data/imports`. Siapkan penyimpanan persisten untuk data tersebut saat deployment dan jangan memasukkannya ke Git.
 
@@ -104,10 +110,11 @@ Jalankan dari direktori repository backend.
 | `npm run db:migrate` | Menerapkan migrasi database |
 | `npm run db:generate` | Membuat migrasi dari perubahan schema |
 | `npm run db:seed` | Menyiapkan akun dan data contoh pengembangan |
+| `npm run db:seed:admin` | Membuat super admin pertama tanpa data demo; tidak mereset akun yang sudah ada |
 | `npm run demo:setup` | Menyiapkan demo lokal |
 | `npm run worker` | Worker terpisah, hanya untuk PostgreSQL |
 
-Jika menggunakan worker terpisah, atur `RUN_WORKER=false` pada proses API. Untuk deployment, gunakan PostgreSQL, konfigurasi environment deployment, jalankan migrasi yang sudah ditinjau, lalu build/start. Seed pengembangan bukan bagian dari langkah deployment.
+Jika menggunakan worker terpisah, atur `RUN_WORKER=false` pada proses API. Untuk deployment, gunakan PostgreSQL dan konfigurasi environment tujuan, jalankan migration yang sudah ditinjau, lalu bootstrap super admin pertama dengan `db:seed:admin` sesuai [panduan deployment](docs/deployment.md). Seed pengembangan `db:seed` bukan bagian dari langkah deployment.
 
 ## Pengujian integrasi frontend
 
