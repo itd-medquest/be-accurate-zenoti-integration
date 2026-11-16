@@ -1,0 +1,53 @@
+{
+  "name": "@imp/backend",
+  "private": true,
+  "overrides": {
+    "uuid": "^11.1.1"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.16"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/server.js",
+    "worker": "tsx src/worker-entry.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "db:push": "drizzle-kit push",
+    "db:seed": "tsx src/db/seed.ts",
+    "demo:setup": "tsx src/db/demo-setup.ts",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.3.14",
+    "@napi-rs/canvas": "^1.0.13",
+    "@tesseract.js-data/eng": "^1.0.0",
+    "better-auth": "^1.6.23",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "drizzle-orm": "^0.45.1",
+    "drizzle-zod": "^0.8.3",
+    "exceljs": "^4.4.0",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.2.1",
+    "helmet": "^8.1.0",
+    "multer": "^2.4.0",
+    "pdfjs-dist": "^6.4.299",
+    "pg": "^8.16.3",
+    "tesseract.js": "^7.0.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.5",
+    "@types/multer": "^2.3.0",
+    "@types/node": "^24.10.0",
+    "@types/pg": "^8.15.6",
+    "drizzle-kit": "^0.31.11",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

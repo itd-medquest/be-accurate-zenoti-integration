@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1792639178636,
+      "tag": "0000_lyrical_ozymandias",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1792651815416,
+      "tag": "0001_clammy_jackal",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794369111954,
+      "tag": "0002_accurate_sales_invoices",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794370078727,
+      "tag": "0003_accurate_invoice_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794372735139,
+      "tag": "0004_company_destination_name",
+      "breakpoints": true
+    }
+  ]
+}

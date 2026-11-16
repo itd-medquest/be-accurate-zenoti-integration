@@ -1,0 +1,87 @@
+# Dependencies and package-manager caches
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.pnp.*
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+.envrc
+.direnv/
+.npmrc
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Build, cache, logs, and test output
+*.tsbuildinfo
+*.log
+.cache/
+.turbo/
+coverage/
+playwright-report/
+test-results/
+blob-report/
+.nyc_output/
+
+# Private local data and temporary files
+/data/
+/uploads/
+/tmp/
+/temp/
+*.bak
+*.dump
+*.sqlite
+*.sqlite3
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.fleet/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+
+# Local assistant instructions, sessions, and configuration
+[Aa][Gg][Ee][Nn][Tt][Ss].md
+[Aa][Gg][Ee][Nn][Tt][Ss].*.md
+CLAUDE.md
+CLAUDE.local.md
+GEMINI.md
+CODEX.md
+SKILL.md
+MEMORY.md
+.agents/
+.skills/
+.agent/
+.codex/
+.claude/
+.cursor/
+.continue/
+.aider*
+.opencode/
+.kiro/
+.roo/
+.clinerules/
+.clinerules
+.roomodes
+.cursorrules
+.cursorignore
+.windsurf/
+.windsurfrules
+.mcp.json
+mcp.json
+.github/copilot-instructions.md
+.github/instructions/
+.github/prompts/
+.github/agents/
+# Compiled backend output
+dist/

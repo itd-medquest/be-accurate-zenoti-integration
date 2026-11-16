@@ -1,0 +1,2 @@
+ALTER TABLE "accurate_deliveries" ADD COLUMN "requested_number" text NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "accurate_delivery_requested_unique" ON "accurate_deliveries" USING btree ("database_id","requested_number");
