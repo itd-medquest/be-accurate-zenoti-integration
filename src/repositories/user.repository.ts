@@ -1,7 +1,15 @@
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { user } from '../db/schema/index.js';
-import type { DbExecutor } from './unit-of-work.repository.js';
+import type { DbExecutor, DbTransaction } from './unit-of-work.repository.js';
+
+/** Serialize first-admin bootstrap with other user writes, including another bootstrap. */
+export function lockForBootstrap(context: DbTransaction) {
+  return context.execute(sql`LOCK TABLE ${user} IN EXCLUSIVE MODE`);
+}
+export function findAny(context: DbExecutor = db) {
+  return context.query.user.findFirst();
+}
 
 export function findById(id: string, context: DbExecutor = db) {
   return context.query.user.findFirst({ where: eq(user.id, id) });
