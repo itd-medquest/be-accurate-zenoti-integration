@@ -16,6 +16,13 @@ export function list(context: DbExecutor = db) {
 export function findById(id: string, context: DbExecutor = db) {
   return context.query.integrationConfigs.findFirst({ where: eq(integrationConfigs.id, id) });
 }
+export function lockById(id: string, context: DbExecutor) {
+  return context
+    .select()
+    .from(integrationConfigs)
+    .where(eq(integrationConfigs.id, id))
+    .for('update');
+}
 export function configure(
   data: typeof integrationConfigs.$inferInsert,
   changes: Partial<typeof integrationConfigs.$inferInsert>,
