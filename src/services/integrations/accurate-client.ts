@@ -10,6 +10,8 @@ import type {
   MasterKind,
 } from '../../types/accurate.types.js';
 import { HttpError } from '../../utils/http-error.js';
+import type { AccurateReceiptPayload } from '../../types/receipt.types.js';
+import { readAccurateReceipt, readReceiptInvoice } from '../../utils/accurate-receipt.js';
 
 const record = z.record(z.string(), z.unknown());
 const envelope = z.object({
@@ -26,6 +28,11 @@ export class AccurateWriteUncertain extends HttpError {
   constructor(
     message = 'Hasil pengiriman belum pasti. Cari faktur di Accurate sebelum mencoba kembali.',
   ) {
+    super(422, message);
+  }
+}
+export class AccurateReceiptRejected extends HttpError {
+  constructor(message: string) {
     super(422, message);
   }
 }
@@ -61,7 +68,7 @@ export class AccurateClient {
   private async request(
     url: string,
     method: 'GET' | 'POST',
-    payload?: AccuratePayload | AccurateCustomerPayload,
+    payload?: AccuratePayload | AccurateCustomerPayload | AccurateReceiptPayload,
     format: 'form' | 'json' = 'form',
   ) {
     const timestamp = new Date().toISOString();
@@ -270,6 +277,121 @@ export class AccurateClient {
         'Customer dikirim tetapi belum dapat diverifikasi. Periksa hasil sebelum mencoba kembali.',
       );
     }
+  }
+  async receiptReference(profile: AccurateProfile, number: string) {
+    const url = new URL(`${profile.host}/accurate/api/sales-receipt/detail.do`);
+    url.searchParams.set('number', number);
+    const response = await this.request(url.href, 'GET');
+    const row = object(response.d ?? response.r);
+    if (!identifier(row.id) || text(row.number) !== number)
+      throw new HttpError(422, 'Referensi penerimaan Accurate tidak ditemukan atau tidak cocok.');
+    return row;
+  }
+  async receiptInvoice(profile: AccurateProfile, id: string) {
+    const response = await this.request(
+      `${profile.host}/accurate/api/sales-invoice/detail.do?id=${encodeURIComponent(id)}`,
+      'GET',
+    );
+    const result = readReceiptInvoice(response.d ?? response.r);
+    if (result.id !== id) throw new HttpError(422, 'ID faktur Accurate tidak cocok.');
+    return result;
+  }
+  async findReceipt(profile: AccurateProfile, number: string) {
+    const url = new URL(`${profile.host}/accurate/api/sales-receipt/list.do`);
+    url.searchParams.set('filter.number.op', 'EQUAL');
+    url.searchParams.set('filter.number.val', number);
+    url.searchParams.set('fields', 'id,number');
+    url.searchParams.set('sp.pageSize', '2');
+    const response = await this.request(url.href, 'GET');
+    if (!Array.isArray(response.d))
+      throw new HttpError(502, 'Daftar penerimaan Accurate tidak dikenali.');
+    const rows = response.d.filter((value) => text(object(value).number) === number);
+    if (rows.length > 1)
+      throw new HttpError(422, 'Nomor penerimaan Accurate tidak unik. Periksa duplikat.');
+    if (!rows.length) return undefined;
+    const result = readAccurateReceipt(await this.receiptReference(profile, number));
+    if (result.id !== identifier(object(rows[0]).id))
+      throw new HttpError(422, 'Identitas hasil pencarian penerimaan berubah.');
+    return result;
+  }
+  async saveReceipt(profile: AccurateProfile, payload: AccurateReceiptPayload) {
+    try {
+      const response = await this.request(
+        `${profile.host}/accurate/api/sales-receipt/save.do`,
+        'POST',
+        payload,
+        'json',
+      );
+      return identifier(object(response.r ?? response.d).id);
+    } catch (cause) {
+      if (cause instanceof AccurateWriteUncertain) throw cause;
+      if (cause instanceof HttpError) throw new AccurateReceiptRejected(cause.message);
+      throw new AccurateWriteUncertain(
+        'Hasil penerimaan belum pasti. Periksa Accurate sebelum tindakan berikutnya.',
+      );
+    }
+  }
+  async receiptAccounts(profile: AccurateProfile, kind: 'bank' | 'fee', search: string, page = 1) {
+    const url = new URL(`${profile.host}/accurate/api/glaccount/list.do`);
+    url.searchParams.set('fields', 'id,no,name,accountType,suspended');
+    url.searchParams.set('sp.page', String(page));
+    url.searchParams.set('sp.pageSize', '20');
+    url.searchParams.set('filter.suspended', 'false');
+    url.searchParams.set('filter.leafOnly', 'true');
+    if (kind === 'bank') url.searchParams.set('filter.accountType.val', 'CASH_BANK');
+    else {
+      url.searchParams.set('filter.accountType.val[0]', 'EXPENSE');
+      url.searchParams.set('filter.accountType.val[1]', 'OTHER_EXPENSE');
+    }
+    if (search) {
+      url.searchParams.set('filter.keywords.op', 'CONTAIN');
+      url.searchParams.set('filter.keywords.val', search);
+    }
+    const result = await this.request(url.href, 'GET');
+    if (!Array.isArray(result.d)) throw new HttpError(502, 'Daftar akun Accurate tidak dikenali.');
+    return result.d
+      .map((value) => {
+        const row = object(value);
+        return {
+          id: identifier(row.id),
+          code: text(row.no),
+          name: text(row.name),
+          type: text(row.accountType),
+          suspended: row.suspended === true,
+        };
+      })
+      .filter(
+        (row) =>
+          row.id &&
+          row.code &&
+          row.name &&
+          !row.suspended &&
+          (kind === 'bank'
+            ? row.type === 'CASH_BANK'
+            : ['EXPENSE', 'OTHER_EXPENSE'].includes(row.type)),
+      );
+  }
+  async receiptAccount(profile: AccurateProfile, kind: 'bank' | 'fee', id: string) {
+    const response = await this.request(
+      `${profile.host}/accurate/api/glaccount/detail.do?id=${encodeURIComponent(id)}`,
+      'GET',
+    );
+    const row = object(response.d ?? response.r);
+    const account = {
+      id: identifier(row.id),
+      code: text(row.no),
+      name: text(row.name),
+      currency: text(object(row.currency).code ?? row.currencyCode),
+      currencyId: identifier(object(row.currency).id ?? row.currencyId),
+    };
+    if (account.id !== id || !account.code || !account.name || row.suspended === true)
+      throw new HttpError(422, 'Akun tidak tersedia atau dinonaktifkan.');
+    const eligible = await this.receiptAccounts(profile, kind, account.code);
+    if (!eligible.some((candidate) => candidate.id === id))
+      throw new HttpError(422, 'Pilih akun aktif bukan akun induk dengan jenis yang sesuai.');
+    if (kind === 'bank' && (account.currency !== 'IDR' || !account.currencyId))
+      throw new HttpError(422, 'Mata uang akun penerimaan harus terverifikasi IDR.');
+    return account;
   }
   async findInvoice(
     profile: AccurateProfile,

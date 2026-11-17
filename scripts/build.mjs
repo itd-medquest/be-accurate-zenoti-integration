@@ -1,6 +1,6 @@
 import { cpSync, rmSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -16,4 +16,8 @@ const result = spawnSync(process.execPath, [join(projectRoot, 'node_modules/type
 });
 if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status ?? 1);
+const { validateMigrationFiles } = await import(
+  pathToFileURL(join(output, 'db/migration-files.js')).href
+);
+validateMigrationFiles(join(projectRoot, 'src/db/migrations'));
 cpSync(join(projectRoot, 'src/db/migrations'), join(output, 'db/migrations'), { recursive: true });

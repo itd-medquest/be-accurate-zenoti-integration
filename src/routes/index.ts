@@ -12,6 +12,7 @@ import { invoicesRouter } from './invoices.routes.js';
 import { settingsRouter } from './settings.routes.js';
 import { usersRouter } from './users.routes.js';
 import { accurateRouter } from './accurate.routes.js';
+import { receiptsRouter } from './receipts.routes.js';
 
 export const apiRouter = Router();
 apiRouter.get('/me', system.me);
@@ -31,3 +32,4 @@ apiRouter.use('/imports', operate, importsRouter);
 apiRouter.use('/users', admin, usersRouter);
 apiRouter.use('/settings', admin, settingsRouter);
 apiRouter.use('/accurate', accurateRouter);
+apiRouter.use('/receipts', receiptsRouter);

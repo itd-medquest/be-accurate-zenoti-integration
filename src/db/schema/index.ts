@@ -7,6 +7,7 @@ export * from './imports.schema.js';
 export * from './integration.schema.js';
 export * from './invoices.schema.js';
 export * from './sync.schema.js';
+export * from './receipts.schema.js';
 import type { branches } from './branches.schema.js';
 import type { invoices } from './invoices.schema.js';
 export type Invoice = typeof invoices.$inferSelect;

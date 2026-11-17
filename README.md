@@ -9,7 +9,11 @@ API dan worker untuk membaca invoice Zenoti, mengelola pemeriksaan Finance, sert
 3. Submit memvalidasi draft dan menyiapkan pengiriman melalui worker.
 4. Hasil pengiriman dan kegagalan tercatat untuk pemeriksaan serta audit.
 
-Item dengan penanda redeemed dan Consultation gratis tidak dikirim ke Accurate. Invoice full redeem disimpan secara lokal; invoice campuran hanya mengirim item yang memenuhi ketentuan pengakuan. Nomor faktur yang sudah digunakan di Accurate ditahan untuk pemeriksaan duplikat. Tahap integrasi ini mengirim Faktur Penjualan, belum Penerimaan Penjualan.
+Item dengan penanda redeemed dan Consultation gratis tidak dikirim ke Accurate. Invoice full redeem disimpan secara lokal; invoice campuran hanya mengirim item yang memenuhi ketentuan pengakuan. Nomor faktur yang sudah digunakan di Accurate ditahan untuk pemeriksaan duplikat. Faktur dan Penerimaan Penjualan mempunyai pemeriksaan, konfirmasi pengiriman, serta antrean tersendiri.
+
+### Penerimaan Penjualan
+
+Pembayaran dari invoice yang faktur Accurate-nya sudah terverifikasi dapat direview, disimpan sebagai draft, dan dikirim setelah konfirmasi Finance. Settings menyediakan mapping akun kas/bank dan biaya per perusahaan, bank, dan metode. Tarif BCA/BNI: CC 2%, debit 1,8%, QRIS 0,7%, transfer langsung 0%; pecahan biaya selalu dibulatkan ke atas. Antrean receipt memeriksa saldo terbaru dan memverifikasi hasil tanpa menjalankan ulang pengiriman faktur. Hasil pengiriman yang belum pasti direkonsiliasi melalui pembacaan vendor. Lihat [alur, kontrak API, dan batas UAT receipt](docs/sales-receipts.md).
 
 ### Customer Accurate baru
 
