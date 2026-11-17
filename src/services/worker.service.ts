@@ -1,4 +1,5 @@
 import { processOne, recoverStaleJobs } from './sync.service.js';
+import { processOneReceipt, recoverStaleReceipts } from './receipt-delivery.service.js';
 export function startWorker() {
   let running = false;
   let ticks = 0;
@@ -6,9 +7,14 @@ export function startWorker() {
     if (running) return;
     running = true;
     try {
-      if (ticks++ % 60 === 0) await recoverStaleJobs();
+      if (ticks++ % 60 === 0) {
+        await recoverStaleJobs();
+        await recoverStaleReceipts();
+      }
       for (let i = 0; i < 10; i++) {
-        if (!(await processOne())) break;
+        const invoice = await processOne();
+        const receipt = await processOneReceipt();
+        if (!invoice && !receipt) break;
       }
     } catch (error) {
       console.error(
