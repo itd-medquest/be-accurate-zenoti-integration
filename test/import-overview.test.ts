@@ -1,8 +1,10 @@
+import { after as afterDatabase } from 'node:test';
+import { createTestDatabase, closeTestDatabases } from './helpers/mysql-database.js';
 import { before, after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 
-process.env.DATABASE_URL = 'pglite:memory://';
+process.env.DATABASE_URL = await createTestDatabase();
 process.env.BETTER_AUTH_SECRET = randomBytes(32).toString('hex');
 process.env.ENCRYPTION_KEY = randomBytes(32).toString('hex');
 process.env.RUN_WORKER = 'false';
@@ -262,4 +264,13 @@ test('calendar dates include complete WIB days and reject invalid or reversed ra
   ])
     assert.equal(importOverviewQuerySchema.safeParse(invalid).success, false);
   assert.equal(importOverviewQuerySchema.safeParse({ dateFrom: '2024-02-29' }).success, true);
+});
+
+// Run after HTTP/file cleanup hooks, including when an earlier teardown failed.
+afterDatabase(async () => {
+  try {
+    await closeDb();
+  } finally {
+    await closeTestDatabases();
+  }
 });

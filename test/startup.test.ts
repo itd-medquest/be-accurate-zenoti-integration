@@ -32,14 +32,14 @@ async function run(entry: string, env: NodeJS.ProcessEnv) {
 function environment(path: string) {
   return {
     ...process.env,
-    DATABASE_URL: `pglite:${path}`,
+    DATABASE_URL: 'mysql://unavailable@127.0.0.1:1/unreachable',
     BETTER_AUTH_SECRET: 'test-startup-secret-12345678901234567890',
     INTEGRATION_MODE: 'simulation',
     NODE_ENV: 'test',
     RUN_WORKER: 'false',
   };
 }
-test('occupied API port rejects a second backend before any PGlite files are opened', async () => {
+test('occupied API port rejects a second backend before opening a database connection', async () => {
   const folder = await mkdtemp(join(tmpdir(), 'imp-startup-')),
     database = join(folder, 'database');
   const server = createServer();
@@ -55,13 +55,16 @@ test('occupied API port rejects a second backend before any PGlite files are ope
     await rmdir(folder);
   }
 });
-test('standalone embedded worker is rejected before opening the demo database', async () => {
+test('legacy embedded configuration is rejected before opening the old database', async () => {
   const folder = await mkdtemp(join(tmpdir(), 'imp-worker-startup-')),
     database = join(folder, 'database');
   try {
-    const result = await run('src/worker-entry.ts', environment(database));
+    const result = await run('src/worker-entry.ts', {
+      ...environment(database),
+      DATABASE_URL: `pglite:${database}`,
+    });
     assert.equal(result.code, 1);
-    assert.match(result.output, /Worker terpisah memerlukan PostgreSQL/);
+    assert.match(result.output, /DATABASE_URL harus memakai mysql/);
     await assert.rejects(access(database));
   } finally {
     await rmdir(folder);

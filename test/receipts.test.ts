@@ -1,3 +1,5 @@
+import { after as afterDatabase } from 'node:test';
+import { createTestDatabase, closeTestDatabases } from './helpers/mysql-database.js';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -6,7 +8,7 @@ import { receiptAmounts, receiptSourceGroups } from '../src/utils/receipt-amount
 
 Object.assign(process.env, {
   NODE_ENV: 'test',
-  DATABASE_URL: 'pglite:memory://',
+  DATABASE_URL: await createTestDatabase(),
   RUN_WORKER: 'false',
   BETTER_AUTH_SECRET: randomBytes(32).toString('hex'),
   ENCRYPTION_KEY: randomBytes(32).toString('hex'),
@@ -413,4 +415,13 @@ test('saved history and its financial snapshot survive source changes and a disc
   assert.equal(invalid.total, 1);
   assert.match(invalid.items[0].error, /tidak valid/);
   assert.equal(writes, 0);
+});
+
+// Run after HTTP/file cleanup hooks, including when an earlier teardown failed.
+afterDatabase(async () => {
+  try {
+    await closeDb();
+  } finally {
+    await closeTestDatabases();
+  }
 });

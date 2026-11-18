@@ -1,10 +1,10 @@
-import { jsonb, pgTable, text } from 'drizzle-orm/pg-core';
-import { time } from './columns.js';
-export const auditLogs = pgTable('audit_logs', {
-  id: text('id').primaryKey(),
-  actorId: text('actor_id'),
-  action: text('action').notNull(),
-  entityId: text('entity_id'),
-  details: jsonb('details'),
-  createdAt: time('created_at').notNull().defaultNow(),
+import { json, mysqlTable, text, varchar } from 'drizzle-orm/mysql-core';
+import { time, currentTime } from './columns.js';
+export const auditLogs = mysqlTable('audit_logs', {
+  id: varchar('id', { length: 100 }).primaryKey(),
+  actorId: varchar('actor_id', { length: 100 }),
+  action: varchar('action', { length: 255 }).notNull(),
+  entityId: varchar('entity_id', { length: 255 }),
+  details: json('details'),
+  createdAt: time('created_at').notNull().default(currentTime),
 });

@@ -1,18 +1,28 @@
 services:
-  postgres:
-    image: postgres:17-alpine
+  mysql:
+    image: mysql:8.4.13
     environment:
-      POSTGRES_USER: imp
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-imp_local}
-      POSTGRES_DB: imp
+      MYSQL_DATABASE: intgrte
+      MYSQL_USER: intgrte
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in your private environment}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in your private environment}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_bin
+      - --default-time-zone=+00:00
     ports:
-      - '127.0.0.1:5432:5432'
+      - '127.0.0.1:3306:3306'
     volumes:
-      - imp_postgres:/var/lib/postgresql/data
+      - intgrte_mysql:/var/lib/mysql
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U imp -d imp']
+      test:
+        [
+          'CMD-SHELL',
+          'MYSQL_PWD="$$MYSQL_ROOT_PASSWORD" mysqladmin ping -h 127.0.0.1 -u root --silent',
+        ]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
+      start_period: 30s
 volumes:
-  imp_postgres:
+  intgrte_mysql:

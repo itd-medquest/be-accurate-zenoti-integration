@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import * as schema from '../db/schema/index.js';
 import { config } from './env.js';
 export const auth = betterAuth({
-  database: drizzleAdapter(db, { provider: 'pg', schema }),
+  database: drizzleAdapter(db, { provider: 'mysql', schema }),
   baseURL: config.BETTER_AUTH_URL,
   secret: config.BETTER_AUTH_SECRET,
   trustedOrigins: [config.FRONTEND_URL],

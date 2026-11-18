@@ -1,54 +1,54 @@
-import { index, integer, jsonb, pgTable, text } from 'drizzle-orm/pg-core';
+import { index, int, json, mysqlTable, text, varchar } from 'drizzle-orm/mysql-core';
 import type { ImportCandidate } from '../../types/import.types.js';
 import { user } from './auth.schema.js';
 import { branches } from './branches.schema.js';
-import { time } from './columns.js';
+import { time, currentTime } from './columns.js';
 import { invoices } from './invoices.schema.js';
-export const importBatches = pgTable('import_batches', {
-  id: text('id').primaryKey(),
-  branchId: text('branch_id')
+export const importBatches = mysqlTable('import_batches', {
+  id: varchar('id', { length: 100 }).primaryKey(),
+  branchId: varchar('branch_id', { length: 100 })
     .notNull()
     .references(() => branches.id),
-  uploaderId: text('uploader_id')
+  uploaderId: varchar('uploader_id', { length: 100 })
     .notNull()
     .references(() => user.id),
-  status: text('status').notNull().default('PREVIEW'),
-  version: integer('version').notNull().default(1),
-  submittedBy: text('submitted_by'),
+  status: varchar('status', { length: 255 }).notNull().default('PREVIEW'),
+  version: int('version').notNull().default(1),
+  submittedBy: varchar('submitted_by', { length: 255 }),
   submittedAt: time('submitted_at'),
-  createdAt: time('created_at').notNull().defaultNow(),
+  createdAt: time('created_at').notNull().default(currentTime),
 });
 
-export const importFiles = pgTable('import_files', {
-  id: text('id').primaryKey(),
-  batchId: text('batch_id')
+export const importFiles = mysqlTable('import_files', {
+  id: varchar('id', { length: 100 }).primaryKey(),
+  batchId: varchar('batch_id', { length: 100 })
     .notNull()
     .references(() => importBatches.id),
   name: text('name').notNull(),
-  storedName: text('stored_name').notNull(),
-  hash: text('hash').notNull(),
-  size: integer('size').notNull(),
-  format: text('format').notNull(),
+  storedName: varchar('stored_name', { length: 255 }).notNull(),
+  hash: varchar('hash', { length: 255 }).notNull(),
+  size: int('size').notNull(),
+  format: varchar('format', { length: 255 }).notNull(),
   error: text('error'),
-  createdAt: time('created_at').notNull().defaultNow(),
+  createdAt: time('created_at').notNull().default(currentTime),
 });
 
-export const importRows = pgTable(
+export const importRows = mysqlTable(
   'import_rows',
   {
-    id: text('id').primaryKey(),
-    batchId: text('batch_id')
+    id: varchar('id', { length: 100 }).primaryKey(),
+    batchId: varchar('batch_id', { length: 100 })
       .notNull()
       .references(() => importBatches.id),
-    fileId: text('file_id')
+    fileId: varchar('file_id', { length: 100 })
       .notNull()
       .references(() => importFiles.id),
-    position: integer('position').notNull(),
-    candidate: jsonb('candidate').$type<ImportCandidate>().notNull(),
-    status: text('status').notNull().default('REVIEW'),
-    invoiceId: text('invoice_id').references(() => invoices.id),
-    duplicateInvoiceId: text('duplicate_invoice_id'),
-    createdAt: time('created_at').notNull().defaultNow(),
+    position: int('position').notNull(),
+    candidate: json('candidate').$type<ImportCandidate>().notNull(),
+    status: varchar('status', { length: 255 }).notNull().default('REVIEW'),
+    invoiceId: varchar('invoice_id', { length: 100 }).references(() => invoices.id),
+    duplicateInvoiceId: varchar('duplicate_invoice_id', { length: 100 }),
+    createdAt: time('created_at').notNull().default(currentTime),
   },
   (t) => [index('import_rows_batch_idx').on(t.batchId)],
 );

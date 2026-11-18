@@ -20,4 +20,5 @@ const { validateMigrationFiles } = await import(
   pathToFileURL(join(output, 'db/migration-files.js')).href
 );
 validateMigrationFiles(join(projectRoot, 'src/db/migrations'));
+validateMigrationFiles(join(projectRoot, 'src/db/migrations/mysql'));
 cpSync(join(projectRoot, 'src/db/migrations'), join(output, 'db/migrations'), { recursive: true });

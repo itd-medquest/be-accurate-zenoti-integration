@@ -1,4 +1,5 @@
-// Isolated browser fixture: an in-memory database and intercepted vendor calls only.
+import { createTestDatabase } from './mysql-database.js';
+// Isolated browser fixture: a disposable MySQL database and intercepted vendor calls only.
 import { randomBytes } from 'node:crypto';
 import 'dotenv/config';
 import { mkdtempSync } from 'node:fs';
@@ -7,7 +8,7 @@ import { join } from 'node:path';
 if (process.env.ACCURATE_MOCK_SERVER !== 'true')
   throw new Error('Set ACCURATE_MOCK_SERVER=true to start the isolated fixture.');
 Object.assign(process.env, {
-  DATABASE_URL: 'pglite:memory://',
+  DATABASE_URL: await createTestDatabase(),
   PORT: '4001',
   FRONTEND_URL: 'http://localhost:3001',
   BETTER_AUTH_URL: 'http://localhost:4001',

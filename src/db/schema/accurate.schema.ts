@@ -1,62 +1,62 @@
-import { jsonb, pgTable, text, uniqueIndex, integer } from 'drizzle-orm/pg-core';
+import { json, mysqlTable, text, uniqueIndex, int, varchar } from 'drizzle-orm/mysql-core';
 import { branches } from './branches.schema.js';
 import { invoices } from './invoices.schema.js';
-import { time } from './columns.js';
+import { time, currentTime } from './columns.js';
 import type { AccuratePayload } from '../../types/accurate.types.js';
 
 // Separate live destinations preserve the destination of existing simulation invoices.
-export const accurateDestinations = pgTable('accurate_destinations', {
-  branchId: text('branch_id')
+export const accurateDestinations = mysqlTable('accurate_destinations', {
+  branchId: varchar('branch_id', { length: 100 })
     .primaryKey()
     .references(() => branches.id),
-  databaseId: text('database_id').notNull(),
-  databaseName: text('database_name').notNull(),
-  targetBranchId: text('target_branch_id').notNull(),
-  targetBranchName: text('target_branch_name').notNull(),
-  updatedAt: time('updated_at').notNull().defaultNow(),
+  databaseId: varchar('database_id', { length: 255 }).notNull(),
+  databaseName: varchar('database_name', { length: 255 }).notNull(),
+  targetBranchId: varchar('target_branch_id', { length: 255 }).notNull(),
+  targetBranchName: varchar('target_branch_name', { length: 255 }).notNull(),
+  updatedAt: time('updated_at').notNull().default(currentTime),
 });
-export const accurateMappings = pgTable(
+export const accurateMappings = mysqlTable(
   'accurate_mappings',
   {
-    id: text('id').primaryKey(),
-    branchId: text('branch_id')
+    id: varchar('id', { length: 100 }).primaryKey(),
+    branchId: varchar('branch_id', { length: 100 })
       .notNull()
       .references(() => branches.id),
-    databaseId: text('database_id').notNull(),
-    kind: text('kind').notNull(),
-    sourceKey: text('source_key').notNull(),
-    targetId: text('target_id').notNull(),
-    targetCode: text('target_code').notNull(),
-    targetName: text('target_name').notNull(),
-    unitName: text('unit_name').notNull().default(''),
-    itemType: text('item_type').notNull().default(''),
-    updatedAt: time('updated_at').notNull().defaultNow(),
+    databaseId: varchar('database_id', { length: 255 }).notNull(),
+    kind: varchar('kind', { length: 64 }).notNull(),
+    sourceKey: varchar('source_key', { length: 64 }).notNull(),
+    targetId: varchar('target_id', { length: 255 }).notNull(),
+    targetCode: varchar('target_code', { length: 255 }).notNull(),
+    targetName: varchar('target_name', { length: 255 }).notNull(),
+    unitName: varchar('unit_name', { length: 255 }).notNull().default(''),
+    itemType: varchar('item_type', { length: 255 }).notNull().default(''),
+    updatedAt: time('updated_at').notNull().default(currentTime),
   },
   (t) => [
     uniqueIndex('accurate_mapping_source_unique').on(t.branchId, t.databaseId, t.kind, t.sourceKey),
   ],
 );
-export const accurateDeliveries = pgTable(
+export const accurateDeliveries = mysqlTable(
   'accurate_deliveries',
   {
-    invoiceId: text('invoice_id')
+    invoiceId: varchar('invoice_id', { length: 100 })
       .primaryKey()
       .references(() => invoices.id),
-    branchId: text('branch_id')
+    branchId: varchar('branch_id', { length: 100 })
       .notNull()
       .references(() => branches.id),
-    databaseId: text('database_id').notNull(),
-    targetBranchId: text('target_branch_id').notNull(),
-    sourceVersion: integer('source_version').notNull(),
-    requestedNumber: text('requested_number').notNull(),
-    payload: jsonb('payload').$type<AccuratePayload>().notNull(),
-    expectedTotal: integer('expected_total').notNull(),
-    status: text('status').notNull().default('PENDING'),
+    databaseId: varchar('database_id', { length: 255 }).notNull(),
+    targetBranchId: varchar('target_branch_id', { length: 255 }).notNull(),
+    sourceVersion: int('source_version').notNull(),
+    requestedNumber: varchar('requested_number', { length: 255 }).notNull(),
+    payload: json('payload').$type<AccuratePayload>().notNull(),
+    expectedTotal: int('expected_total').notNull(),
+    status: varchar('status', { length: 255 }).notNull().default('PENDING'),
     attemptedAt: time('attempted_at'),
-    targetId: text('target_id'),
-    targetNumber: text('target_number'),
-    createdAt: time('created_at').notNull().defaultNow(),
-    updatedAt: time('updated_at').notNull().defaultNow(),
+    targetId: varchar('target_id', { length: 255 }),
+    targetNumber: varchar('target_number', { length: 255 }),
+    createdAt: time('created_at').notNull().default(currentTime),
+    updatedAt: time('updated_at').notNull().default(currentTime),
   },
   (t) => [
     uniqueIndex('accurate_delivery_number_unique').on(

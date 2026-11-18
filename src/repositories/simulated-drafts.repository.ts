@@ -12,17 +12,19 @@ export function findByReference(reference: string, databaseId: string, context: 
   });
 }
 
-export function upsert(
+export async function upsert(
   data: typeof simulatedDrafts.$inferInsert,
   changes: Partial<typeof simulatedDrafts.$inferInsert>,
   context: DbExecutor = db,
 ) {
+  await context.insert(simulatedDrafts).values(data).onDuplicateKeyUpdate({ set: changes });
   return context
-    .insert(simulatedDrafts)
-    .values(data)
-    .onConflictDoUpdate({
-      target: [simulatedDrafts.reference, simulatedDrafts.databaseId],
-      set: changes,
-    })
-    .returning();
+    .select()
+    .from(simulatedDrafts)
+    .where(
+      and(
+        eq(simulatedDrafts.reference, data.reference),
+        eq(simulatedDrafts.databaseId, data.databaseId),
+      ),
+    );
 }

@@ -7,6 +7,7 @@ import {
   receiptAccountMappings,
 } from '../db/schema/index.js';
 import type { DbExecutor } from './unit-of-work.repository.js';
+import { isDuplicateEntry } from './mysql-errors.js';
 
 export function sources(context: DbExecutor = db) {
   return context
@@ -104,36 +105,39 @@ export function sourceDraft(invoiceId: string, sourceKey: string, context: DbExe
     ),
   });
 }
-export function insert(data: typeof accurateReceipts.$inferInsert, context: DbExecutor) {
-  return context.insert(accurateReceipts).values(data).onConflictDoNothing().returning();
+export async function insert(data: typeof accurateReceipts.$inferInsert, context: DbExecutor) {
+  try {
+    await context.insert(accurateReceipts).values(data);
+  } catch (error) {
+    if (isDuplicateEntry(error)) return [];
+    throw error;
+  }
+  return context.select().from(accurateReceipts).where(eq(accurateReceipts.id, data.id));
 }
 export function findByNumber(databaseId: string, number: string, context: DbExecutor = db) {
   return context.query.accurateReceipts.findFirst({
     where: and(eq(accurateReceipts.databaseId, databaseId), eq(accurateReceipts.number, number)),
   });
 }
-export function update(
+export async function update(
   id: string,
   data: Partial<typeof accurateReceipts.$inferInsert>,
   context: DbExecutor = db,
 ) {
-  return context
+  await context
     .update(accurateReceipts)
     .set({ ...data, updatedAt: new Date() })
-    .where(eq(accurateReceipts.id, id))
-    .returning();
+    .where(eq(accurateReceipts.id, id));
+  return context.select().from(accurateReceipts).where(eq(accurateReceipts.id, id));
 }
-export function saveMapping(data: typeof receiptAccountMappings.$inferInsert, context: DbExecutor) {
-  return context
+export async function saveMapping(
+  data: typeof receiptAccountMappings.$inferInsert,
+  context: DbExecutor,
+) {
+  await context
     .insert(receiptAccountMappings)
     .values(data)
-    .onConflictDoUpdate({
-      target: [
-        receiptAccountMappings.branchId,
-        receiptAccountMappings.databaseId,
-        receiptAccountMappings.bank,
-        receiptAccountMappings.method,
-      ],
+    .onDuplicateKeyUpdate({
       set: {
         accountId: data.accountId,
         accountNo: data.accountNo,
@@ -144,6 +148,16 @@ export function saveMapping(data: typeof receiptAccountMappings.$inferInsert, co
         version: data.version,
         updatedAt: new Date(),
       },
-    })
-    .returning();
+    });
+  return context
+    .select()
+    .from(receiptAccountMappings)
+    .where(
+      and(
+        eq(receiptAccountMappings.branchId, data.branchId),
+        eq(receiptAccountMappings.databaseId, data.databaseId),
+        eq(receiptAccountMappings.bank, data.bank),
+        eq(receiptAccountMappings.method, data.method),
+      ),
+    );
 }

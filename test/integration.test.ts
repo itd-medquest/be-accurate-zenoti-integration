@@ -1,3 +1,5 @@
+import { after as afterDatabase } from 'node:test';
+import { createTestDatabase, closeTestDatabases } from './helpers/mysql-database.js';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -7,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { receiptPdf } from './helpers/receipt-fixture.js';
 import { ocrReceiptPdf } from './helpers/ocr-receipt-fixture.js';
-process.env.DATABASE_URL = 'pglite:memory://';
+process.env.DATABASE_URL = await createTestDatabase();
 process.env.BETTER_AUTH_SECRET = randomBytes(32).toString('hex');
 process.env.ENCRYPTION_KEY = randomBytes(32).toString('hex');
 process.env.RUN_WORKER = 'false';
@@ -405,50 +407,79 @@ test('deleting users requires an admin, blocks self deletion and reports missing
 
 test('deleting a user removes credentials and sessions but preserves audit history', async () => {
   const email = `delete-${randomUUID()}@example.test`;
-  const created = await request('/users', 'super_admin', 'POST', { name: 'Delete fixture', email, password, role: 'finance' });
+  const created = await request('/users', 'super_admin', 'POST', {
+    name: 'Delete fixture',
+    email,
+    password,
+    role: 'finance',
+  });
   assert.equal(created.status, 201);
   const { id } = await created.json();
   const login = await request('/auth/sign-in/email', undefined, 'POST', { email, password });
   assert.equal(login.status, 200);
-  cookies.deleted = login.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ');
+  cookies.deleted = login.headers
+    .getSetCookie()
+    .map((value) => value.split(';')[0])
+    .join('; ');
   assert.equal((await request('/me', 'deleted')).status, 200);
   const auditId = randomUUID();
-  await db.insert(auditLogs).values({ id: auditId, actorId: id, action: 'fixture.previous-action' });
+  await db
+    .insert(auditLogs)
+    .values({ id: auditId, actorId: id, action: 'fixture.previous-action' });
   assert.equal((await request(`/users/${id}`, 'super_admin', 'DELETE')).status, 200);
   assert.equal(await db.query.user.findFirst({ where: eq(user.id, id) }), undefined);
   assert.equal((await db.select().from(account).where(eq(account.userId, id))).length, 0);
   assert.equal((await db.select().from(session).where(eq(session.userId, id))).length, 0);
   assert.equal((await request('/me', 'deleted')).status, 401);
-  assert.equal((await request('/auth/sign-in/email', undefined, 'POST', { email, password })).status, 401);
+  assert.equal(
+    (await request('/auth/sign-in/email', undefined, 'POST', { email, password })).status,
+    401,
+  );
   const listing = await (await request('/users', 'super_admin')).json();
   assert.ok(!listing.some((value: { id: string }) => value.id === id));
   const logs = await db.select().from(auditLogs);
   assert.ok(logs.some((value) => value.id === auditId && value.actorId === id));
-  assert.ok(logs.some((value) => value.action === 'user.delete' && value.actorId === 'super_admin' && value.entityId === id));
+  assert.ok(
+    logs.some(
+      (value) =>
+        value.action === 'user.delete' && value.actorId === 'super_admin' && value.entityId === id,
+    ),
+  );
   assert.equal((await request(`/users/${id}`, 'super_admin', 'DELETE')).status, 404);
 });
 
 test('a user with upload history cannot be deleted, even after the batch is archived', async () => {
-  const id = randomUUID(), batchId = randomUUID();
-  await db.insert(user).values({ id, name: 'Uploader fixture', email: `${id}@example.test`, role: 'finance' });
-  await db.insert(importBatches).values({ id: batchId, branchId: 'branch-jakarta', uploaderId: id, status: 'ARCHIVED' });
+  const id = randomUUID(),
+    batchId = randomUUID();
+  await db
+    .insert(user)
+    .values({ id, name: 'Uploader fixture', email: `${id}@example.test`, role: 'finance' });
+  await db
+    .insert(importBatches)
+    .values({ id: batchId, branchId: 'branch-jakarta', uploaderId: id, status: 'ARCHIVED' });
   const response = await request(`/users/${id}`, 'super_admin', 'DELETE');
   assert.equal(response.status, 409);
   assert.match((await response.json()).error, /Nonaktifkan akun/);
   assert.ok(await db.query.user.findFirst({ where: eq(user.id, id) }));
   assert.ok(await db.query.importBatches.findFirst({ where: eq(importBatches.id, batchId) }));
-  assert.equal((await request(`/users/${id}`, 'super_admin', 'PATCH', { role: 'finance', active: false })).status, 200);
+  assert.equal(
+    (await request(`/users/${id}`, 'super_admin', 'PATCH', { role: 'finance', active: false }))
+      .status,
+    200,
+  );
 });
 
 test('opposing admin deletion and demotion preserve an active admin and recheck authority', async () => {
-  const a = randomUUID(), b = randomUUID();
+  const a = randomUUID(),
+    b = randomUUID();
   await db.insert(user).values([
     { id: a, name: 'Admin A', email: `${a}@example.test`, role: 'super_admin' },
     { id: b, name: 'Admin B', email: `${b}@example.test`, role: 'super_admin' },
   ]);
   const { deleteUser, updateUser } = await import('../src/services/users.service.js');
   const results = await Promise.allSettled([
-    deleteUser(a, b), updateUser(b, { role: 'viewer', active: true }, a),
+    deleteUser(a, b),
+    updateUser(b, { role: 'viewer', active: true }, a),
   ]);
   assert.equal(results.filter((value) => value.status === 'fulfilled').length, 1);
   const remaining = (await db.select().from(user)).filter((value) => [a, b].includes(value.id));
@@ -1424,7 +1455,8 @@ test(
 );
 
 test('manual package accepts tax percent, reconciles small rounding and audits exact financial values', async () => {
-  const { salesTemplateBuffer, salesHeaders } = await import('../src/utils/parsers/sales-accrual.js');
+  const { salesTemplateBuffer, salesHeaders } =
+    await import('../src/utils/parsers/sales-accrual.js');
   const Excel = (await import('exceljs')).default;
   const w = new Excel.Workbook();
   await w.xlsx.load((await salesTemplateBuffer(true)) as never);
@@ -1794,4 +1826,13 @@ test('source items including the last line may be removed from a draft but sourc
     ).status,
     422,
   );
+});
+
+// Run after HTTP/file cleanup hooks, including when an earlier teardown failed.
+afterDatabase(async () => {
+  try {
+    await closeDb();
+  } finally {
+    await closeTestDatabases();
+  }
 });

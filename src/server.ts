@@ -24,8 +24,7 @@ async function stop() {
   process.exit(0);
 }
 try {
-  // Reserve the API port before importing modules that open the embedded database.
-  // A second API process must fail before it can access the same PGlite files.
+  // Reserve the port before opening database connections.
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(config.PORT, () => {
@@ -35,13 +34,7 @@ try {
   });
   const { closeDb } = await import('./db/index.js');
   closeDatabase = closeDb;
-  // The local single-process demo migrates through its own connection. Opening a
-  // second PGlite process for migrations while dev/watch is running is unsafe.
-  // PostgreSQL deployments keep the explicit migration step.
-  if (config.DATABASE_URL.startsWith('pglite:')) {
-    const { migrate } = await import('./db/migrate.js');
-    await migrate();
-  }
+  // Apply reviewed migrations explicitly before starting an API or worker.
   const { checkDatabase } = await import('./repositories/system.repository.js');
   await checkDatabase();
   const { app } = await import('./app.js');
@@ -62,7 +55,7 @@ try {
       event: 'server.start.failed',
       message:
         code === 'EADDRINUSE'
-          ? `Port ${config.PORT} sudah digunakan. Jalankan hanya satu backend untuk database demo.`
+          ? `Port ${config.PORT} sudah digunakan. Gunakan port lain untuk proses backend tambahan.`
           : error instanceof Error
             ? error.message
             : 'Backend gagal dimulai.',

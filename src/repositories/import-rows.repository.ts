@@ -59,7 +59,7 @@ export function updateByFile(
 }
 export function countActive(batchId: string, context: DbExecutor = db) {
   return context
-    .select({ count: sql.raw('count(*)::int').mapWith(Number) })
+    .select({ count: sql.raw('count(*)').mapWith(Number) })
     .from(importRows)
     .where(and(eq(importRows.batchId, batchId), notInArray(importRows.status, ['DELETED'])));
 }

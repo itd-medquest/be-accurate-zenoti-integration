@@ -28,6 +28,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   } finally {
     await closeDb();
   }
-  // PGlite shutdown may reset the process exit status; set it after closing the database.
+  // Keep a failing exit status after all database connections have closed.
   if (failed) process.exitCode = 1;
 }

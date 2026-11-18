@@ -1,9 +1,9 @@
-import { boolean, pgTable, text } from 'drizzle-orm/pg-core';
-export const branches = pgTable('branches', {
-  id: text('id').primaryKey(),
+import { boolean, mysqlTable, text, varchar } from 'drizzle-orm/mysql-core';
+export const branches = mysqlTable('branches', {
+  id: varchar('id', { length: 100 }).primaryKey(),
   name: text('name').notNull(),
-  centerId: text('center_id').notNull().unique(),
-  accurateDatabaseId: text('accurate_database_id').notNull(),
-  accurateBranchId: text('accurate_branch_id').notNull(),
+  centerId: varchar('center_id', { length: 255 }).notNull().unique(),
+  accurateDatabaseId: varchar('accurate_database_id', { length: 255 }).notNull(),
+  accurateBranchId: varchar('accurate_branch_id', { length: 255 }).notNull(),
   active: boolean('active').notNull().default(true),
 });

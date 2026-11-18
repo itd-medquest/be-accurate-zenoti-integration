@@ -1,21 +1,22 @@
-import { PGlite } from '@electric-sql/pglite';
-import { drizzle } from 'drizzle-orm/node-postgres';
-import { drizzle as liteDrizzle } from 'drizzle-orm/pglite';
-import { mkdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { Pool } from 'pg';
+import { drizzle } from 'drizzle-orm/mysql2';
+import mysql from 'mysql2/promise';
 import { config } from '../config/env.js';
 import * as schema from './schema/index.js';
-const embedded = config.DATABASE_URL.startsWith('pglite:');
-const embeddedPath = embedded ? config.DATABASE_URL.slice(7) : '';
-if (embeddedPath && embeddedPath !== 'memory://')
-  mkdirSync(dirname(resolve(embeddedPath)), { recursive: true });
-export const pool = embedded ? undefined : new Pool({ connectionString: config.DATABASE_URL });
-export const lite = embedded ? new PGlite(embeddedPath || undefined) : undefined;
-export const db = (lite ? liteDrizzle(lite, { schema }) : drizzle(pool!, { schema })) as ReturnType<
-  typeof drizzle<typeof schema>
->;
-export async function closeDb() {
-  if (lite) await lite.close();
-  if (pool) await pool.end();
+
+export const pool = mysql.createPool({
+  uri: config.DATABASE_URL,
+  timezone: 'Z',
+  // The handshake collation is one byte; select the newer binary collation after connecting.
+  charset: 'utf8mb4',
+  connectionLimit: 10,
+  flags: ['-FOUND_ROWS'],
+  ...(config.DATABASE_SSL === 'true' ? { ssl: { rejectUnauthorized: true } } : {}),
+});
+pool.on('connection', (connection) => {
+  connection.query("SET time_zone = '+00:00', collation_connection = 'utf8mb4_0900_bin'");
+});
+export const db = drizzle(pool, { schema, mode: 'default' });
+let closing: Promise<void> | undefined;
+export function closeDb() {
+  return (closing ??= pool.end());
 }

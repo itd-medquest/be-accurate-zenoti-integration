@@ -1,35 +1,35 @@
-import { index, integer, jsonb, pgTable, text, uniqueIndex } from 'drizzle-orm/pg-core';
+import { index, int, json, mysqlTable, text, uniqueIndex, varchar } from 'drizzle-orm/mysql-core';
 import type { InvoiceItem, InvoicePayment } from '../../types/invoice.types.js';
 import { branches } from './branches.schema.js';
-import { time } from './columns.js';
-export const invoices = pgTable(
+import { time, currentTime } from './columns.js';
+export const invoices = mysqlTable(
   'invoices',
   {
-    id: text('id').primaryKey(),
-    sourceId: text('source_id').notNull(),
-    number: text('number').notNull(),
-    branchId: text('branch_id')
+    id: varchar('id', { length: 100 }).primaryKey(),
+    sourceId: varchar('source_id', { length: 255 }).notNull(),
+    number: varchar('number', { length: 255 }).notNull(),
+    branchId: varchar('branch_id', { length: 100 })
       .notNull()
       .references(() => branches.id),
     customer: text('customer').notNull(),
-    customerId: text('customer_id').notNull(),
+    customerId: varchar('customer_id', { length: 255 }).notNull(),
     date: time('date').notNull(),
     dueDate: time('due_date'),
-    businessStatus: text('business_status').notNull(),
-    paymentStatus: text('payment_status').notNull(),
-    syncStatus: text('sync_status').notNull().default('PENDING'),
-    total: integer('total').notNull(),
-    outstanding: integer('outstanding').notNull(),
-    discount: integer('discount').notNull().default(0),
-    tax: integer('tax').notNull().default(0),
-    items: jsonb('items').$type<InvoiceItem[]>().notNull(),
-    payments: jsonb('payments').$type<InvoicePayment[]>().notNull(),
-    exception: text('exception'),
+    businessStatus: varchar('business_status', { length: 255 }).notNull(),
+    paymentStatus: varchar('payment_status', { length: 255 }).notNull(),
+    syncStatus: varchar('sync_status', { length: 255 }).notNull().default('PENDING'),
+    total: int('total').notNull(),
+    outstanding: int('outstanding').notNull(),
+    discount: int('discount').notNull().default(0),
+    tax: int('tax').notNull().default(0),
+    items: json('items').$type<InvoiceItem[]>().notNull(),
+    payments: json('payments').$type<InvoicePayment[]>().notNull(),
+    exception: varchar('exception', { length: 255 }),
     error: text('error'),
-    version: integer('version').notNull().default(1),
-    sourceHash: text('source_hash'),
-    createdAt: time('created_at').notNull().defaultNow(),
-    updatedAt: time('updated_at').notNull().defaultNow(),
+    version: int('version').notNull().default(1),
+    sourceHash: varchar('source_hash', { length: 255 }),
+    createdAt: time('created_at').notNull().default(currentTime),
+    updatedAt: time('updated_at').notNull().default(currentTime),
   },
   (t) => [
     uniqueIndex('invoice_source_branch_unique').on(t.sourceId, t.branchId),

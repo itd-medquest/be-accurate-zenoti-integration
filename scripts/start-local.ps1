@@ -12,17 +12,11 @@ if (-not (Test-Path -LiteralPath 'node_modules')) {
   if ($LASTEXITCODE -ne 0) { throw 'Instalasi dependency backend gagal.' }
 }
 if (-not (Test-Path -LiteralPath '.env')) {
-  npm.cmd run demo:setup
-  if ($LASTEXITCODE -ne 0) { throw 'Setup database demo gagal.' }
+  Copy-Item -LiteralPath '.env.example' -Destination '.env'
+  throw 'Lengkapi .env dengan koneksi MySQL, secret autentikasi, dan ENCRYPTION_KEY. Jalankan db:migrate serta import akun atau seed admin sebelum memulai backend.'
 }
-Write-Host 'Backend: http://localhost:4000. Akun demo tersedia di .env backend.'
+Write-Host 'Backend MySQL: pastikan database aktif dan migration sudah dijalankan.'
 if (-not $SetupOnly) {
-  $taskDatabaseConfig = Get-Content -LiteralPath '.env' | Where-Object { $_ -match '^DATABASE_URL\s*=\s*["'']?pglite:' }
-  if ($taskDatabaseConfig) {
-    Write-Host 'Demo PGlite: menjalankan satu proses backend tanpa hot reload. Restart setelah mengubah kode backend.'
-    npm.cmd run build
-    if ($LASTEXITCODE -ne 0) { throw 'Build backend gagal.' }
-    npm.cmd start
-  } else { npm.cmd run dev }
+  npm.cmd run dev
   exit $LASTEXITCODE
 }

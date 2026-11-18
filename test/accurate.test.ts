@@ -1,3 +1,5 @@
+import { after as afterDatabase } from 'node:test';
+import { createTestDatabase, closeTestDatabases } from './helpers/mysql-database.js';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID, createHmac } from 'node:crypto';
@@ -12,7 +14,7 @@ import { chargeableItems } from '../src/utils/redemption.js';
 import type { ImportCandidate } from '../src/types/import.types.js';
 
 Object.assign(process.env, {
-  DATABASE_URL: 'pglite:memory://',
+  DATABASE_URL: await createTestDatabase(),
   RUN_WORKER: 'false',
   INTEGRATION_MODE: 'simulation',
   IMPORT_PACKAGE_TAX_POLICY: 'proportional',
@@ -665,4 +667,13 @@ test('a live mixed batch saves full redemption locally and posts only the paid s
   assert.equal(delivery?.status, 'SUCCEEDED');
   assert.equal(delivery?.expectedTotal, 150000);
   await assert.rejects(enqueue(local.invoiceId!, 'finance'), /full redeem/);
+});
+
+// Run after HTTP/file cleanup hooks, including when an earlier teardown failed.
+afterDatabase(async () => {
+  try {
+    await closeDb();
+  } finally {
+    await closeTestDatabases();
+  }
 });

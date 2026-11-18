@@ -1,3 +1,5 @@
+import { after as afterDatabase } from 'node:test';
+import { createTestDatabase, closeTestDatabases } from './helpers/mysql-database.js';
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, test } from 'node:test';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -7,7 +9,7 @@ import { sql, eq } from 'drizzle-orm';
 import { verifyPassword } from 'better-auth/crypto';
 
 Object.assign(process.env, {
-  DATABASE_URL: 'pglite:memory://',
+  DATABASE_URL: await createTestDatabase(),
   NODE_ENV: 'test',
   RUN_WORKER: 'false',
   BETTER_AUTH_SECRET: randomBytes(32).toString('hex'),
@@ -25,41 +27,50 @@ const input = {
   password: randomBytes(24).toString('hex'),
 };
 
-before(async () => { await migrate(); });
+before(async () => {
+  await migrate();
+});
 after(closeDb);
 beforeEach(async () => {
-  await db.execute(sql`TRUNCATE TABLE users CASCADE`);
+  await db.delete(user);
   await db.delete(auditLogs);
 });
 
 async function assertOnlyBootstrapRows() {
-  const tables = await db.execute<{ table_name: string }>(
-    sql`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`,
+  const [tables] = await db.execute(
+    sql`SELECT TABLE_NAME as table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' AND table_name NOT IN ('application_locks', '__drizzle_migrations')`,
   );
-  for (const { table_name: table } of tables.rows) {
-    const result = await db.execute<{ total: string }>(
-      sql`SELECT count(*) AS total FROM ${sql.identifier(table)}`,
+  for (const { table_name: table } of tables) {
+    const [result] = await db.execute(sql`SELECT count(*) AS total FROM ${sql.identifier(table)}`);
+    assert.equal(
+      Number(result[0]?.total),
+      ['users', 'accounts', 'audit_logs'].includes(table) ? 1 : 0,
+      table,
     );
-    assert.equal(Number(result.rows[0]?.total), ['users', 'accounts', 'audit_logs'].includes(table) ? 1 : 0, table);
   }
 }
 
 test('committed migrations create an empty application schema and can be rerun', async () => {
   await migrate();
-  const tables = await db.execute<{ table_name: string }>(
-    sql`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`,
+  const [tables] = await db.execute(
+    sql`SELECT TABLE_NAME as table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' AND table_name NOT IN ('application_locks', '__drizzle_migrations')`,
   );
-  assert.ok(tables.rows.length > 10);
-  for (const { table_name: table } of tables.rows) {
-    const result = await db.execute<{ total: string }>(
-      sql`SELECT count(*) AS total FROM ${sql.identifier(table)}`,
-    );
-    assert.equal(Number(result.rows[0]?.total), 0, table);
+  assert.ok(tables.length > 10);
+  for (const { table_name: table } of tables) {
+    const [result] = await db.execute(sql`SELECT count(*) AS total FROM ${sql.identifier(table)}`);
+    assert.equal(Number(result[0]?.total), 0, table);
   }
 });
 
 test('bootstrap creates one normalized active admin with a hashed login and no demo data', async () => {
-  assert.deepEqual(await bootstrapAdmin({ ...input, name: ` ${input.name} `, email: ` ${input.email.toUpperCase()} ` }), { created: true });
+  assert.deepEqual(
+    await bootstrapAdmin({
+      ...input,
+      name: ` ${input.name} `,
+      email: ` ${input.email.toUpperCase()} `,
+    }),
+    { created: true },
+  );
   const [created] = await db.select().from(user);
   const [credential] = await db.select().from(account);
   assert.equal(created?.role, 'super_admin');
@@ -81,7 +92,14 @@ test('bootstrap creates one normalized active admin with a hashed login and no d
 test('rerunning bootstrap never changes the existing password, name or audit history', async () => {
   await bootstrapAdmin(input);
   const before = await db.select().from(account);
-  assert.deepEqual(await bootstrapAdmin({ ...input, name: 'Another Name', password: randomBytes(24).toString('hex') }), { created: false });
+  assert.deepEqual(
+    await bootstrapAdmin({
+      ...input,
+      name: 'Another Name',
+      password: randomBytes(24).toString('hex'),
+    }),
+    { created: false },
+  );
   assert.deepEqual(await db.select().from(account), before);
   assert.equal((await db.select().from(user))[0]?.name, input.name);
   await assertOnlyBootstrapRows();
@@ -94,7 +112,9 @@ test('bootstrap refuses existing non-admin, inactive and credential-less account
     { role: 'super_admin', active: true },
   ]) {
     await db.delete(user);
-    await db.insert(user).values({ id: randomUUID(), name: input.name, email: input.email, ...target });
+    await db
+      .insert(user)
+      .values({ id: randomUUID(), name: input.name, email: input.email, ...target });
     const original = await db.select().from(user);
     await assert.rejects(bootstrapAdmin(input), /Email sudah terdaftar/);
     assert.deepEqual(await db.select().from(user), original);
@@ -105,7 +125,20 @@ test('bootstrap refuses existing non-admin, inactive and credential-less account
 
 test('bootstrap refuses a second admin with a different email', async () => {
   await bootstrapAdmin(input);
-  await assert.rejects(bootstrapAdmin({ ...input, email: 'second@example.test' }), /tanpa pengguna/);
+  await assert.rejects(
+    bootstrapAdmin({ ...input, email: 'second@example.test' }),
+    /tanpa pengguna/,
+  );
+  await assertOnlyBootstrapRows();
+});
+
+test('concurrent first-admin bootstraps serialize on MySQL without creating a second account', async () => {
+  const results = await Promise.allSettled([
+    bootstrapAdmin(input),
+    bootstrapAdmin({ ...input, email: 'concurrent@example.test' }),
+  ]);
+  assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+  assert.equal(results.filter((result) => result.status === 'rejected').length, 1);
   await assertOnlyBootstrapRows();
 });
 
@@ -124,23 +157,26 @@ test('invalid credentials and unexpected fields fail without changing the databa
 });
 
 test('failed credential insertion rolls back user creation and audit', async () => {
-  await db.execute(sql`CREATE FUNCTION reject_bootstrap_account() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test credential failure'; END $$`);
-  await db.execute(sql`CREATE TRIGGER reject_bootstrap_account BEFORE INSERT ON accounts FOR EACH ROW EXECUTE FUNCTION reject_bootstrap_account()`);
+  await db.execute(
+    sql`CREATE TRIGGER reject_bootstrap_account BEFORE INSERT ON accounts FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'test credential failure'`,
+  );
   try {
     await assert.rejects(bootstrapAdmin(input));
     assert.equal((await db.select().from(user)).length, 0);
     assert.equal((await db.select().from(account)).length, 0);
     assert.equal((await db.select().from(auditLogs)).length, 0);
   } finally {
-    await db.execute(sql`DROP TRIGGER reject_bootstrap_account ON accounts`);
-    await db.execute(sql`DROP FUNCTION reject_bootstrap_account()`);
+    await db.execute(sql`DROP TRIGGER reject_bootstrap_account`);
   }
 });
 
 test('bootstrapped credentials work with the existing Better Auth login', async () => {
   await bootstrapAdmin(input);
   const { auth } = await import('../src/config/auth.js');
-  const response = await auth.api.signInEmail({ body: { email: input.email, password: input.password }, asResponse: true });
+  const response = await auth.api.signInEmail({
+    body: { email: input.email, password: input.password },
+    asResponse: true,
+  });
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.user.role, 'super_admin');
@@ -156,7 +192,7 @@ test('CLI returns a failing exit status after database shutdown without leaking 
     {
       env: {
         ...process.env,
-        DATABASE_URL: 'pglite:memory://',
+        DATABASE_URL: process.env.DATABASE_URL,
         SEED_ADMIN_EMAIL: input.email,
         SEED_ADMIN_PASSWORD: invalidPassword,
       },
@@ -168,4 +204,13 @@ test('CLI returns a failing exit status after database shutdown without leaking 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Seed admin gagal/);
   assert.ok(!`${result.stdout}${result.stderr}`.includes(invalidPassword));
+});
+
+// Run after HTTP/file cleanup hooks, including when an earlier teardown failed.
+afterDatabase(async () => {
+  try {
+    await closeDb();
+  } finally {
+    await closeTestDatabases();
+  }
 });

@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { branches } from '../db/schema/index.js';
 import type { DbExecutor } from './unit-of-work.repository.js';
@@ -23,5 +23,12 @@ export function updateById(
   return context.update(branches).set(changes).where(eq(branches.id, id));
 }
 export function seedMissing(data: typeof branches.$inferInsert, context: DbExecutor = db) {
-  return context.insert(branches).values(data).onConflictDoNothing();
+  return context
+    .insert(branches)
+    .values(data)
+    .onDuplicateKeyUpdate({ set: { id: sql`${branches.id}` } });
+}
+
+export function create(data: typeof branches.$inferInsert, context: DbExecutor) {
+  return context.insert(branches).values(data);
 }

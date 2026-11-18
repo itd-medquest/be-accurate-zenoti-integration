@@ -1,3 +1,5 @@
+import { after as afterDatabase } from 'node:test';
+import { createTestDatabase, closeTestDatabases } from './helpers/mysql-database.js';
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -14,7 +16,7 @@ import {
 import type { ImportCandidate } from '../src/types/import.types.js';
 
 Object.assign(process.env, {
-  DATABASE_URL: 'pglite:memory://',
+  DATABASE_URL: await createTestDatabase(),
   RUN_WORKER: 'false',
   BETTER_AUTH_SECRET: randomBytes(32).toString('hex'),
   ENCRYPTION_KEY: randomBytes(32).toString('hex'),
@@ -243,4 +245,13 @@ test('full redeem requires review, rejects Accurate payload, saves locally with 
     1,
   );
   await submitImport(batchId, result.version, ids, 'finance');
+});
+
+// Run after HTTP/file cleanup hooks, including when an earlier teardown failed.
+afterDatabase(async () => {
+  try {
+    await closeDb();
+  } finally {
+    await closeTestDatabases();
+  }
 });

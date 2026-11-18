@@ -16,7 +16,7 @@ export async function getSettings() {
     mode: (await accurateConnection()).mode,
     targetStatus: 'SALES_INVOICE',
     accurate: await publicAccurateConnection(),
-    queue: 'PostgreSQL',
+    queue: 'MySQL',
     timezone: 'Asia/Jakarta',
     connections: rows.map((c) => ({
       id: c.id,

@@ -46,7 +46,7 @@ export function listVisible(page: number | undefined, pageSize: number, context:
 }
 export function countVisible(context: DbExecutor = db) {
   return context
-    .select({ total: sql.raw('count(*)::int').mapWith(Number) })
+    .select({ total: sql.raw('count(*)').mapWith(Number) })
     .from(importBatches)
     .where(notInArray(importBatches.status, ['DELETED', 'ARCHIVED']));
 }

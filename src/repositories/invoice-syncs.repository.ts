@@ -8,13 +8,7 @@ export function upsertTarget(
   changes: Partial<typeof invoiceSyncs.$inferInsert>,
   context: DbExecutor = db,
 ) {
-  return context
-    .insert(invoiceSyncs)
-    .values(data)
-    .onConflictDoUpdate({
-      target: [invoiceSyncs.invoiceId, invoiceSyncs.databaseId],
-      set: changes,
-    });
+  return context.insert(invoiceSyncs).values(data).onDuplicateKeyUpdate({ set: changes });
 }
 
 export function listForInvoice(id: string, context: DbExecutor = db) {

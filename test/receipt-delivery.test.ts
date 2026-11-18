@@ -1,3 +1,5 @@
+import { after as afterDatabase } from 'node:test';
+import { createTestDatabase, closeTestDatabases } from './helpers/mysql-database.js';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -7,7 +9,7 @@ import type { AccurateReceiptPayload } from '../src/types/receipt.types.js';
 import { readAccurateReceipt, readReceiptInvoice } from '../src/utils/accurate-receipt.js';
 
 Object.assign(process.env, {
-  DATABASE_URL: 'pglite:memory://',
+  DATABASE_URL: await createTestDatabase(),
   NODE_ENV: 'test',
   RUN_WORKER: 'false',
   BETTER_AUTH_SECRET: randomBytes(32).toString('hex'),
@@ -668,4 +670,13 @@ test('contract parser rejects missing values and fractional amounts instead of t
   for (const chequeAmount of [null, '', '   ', 147000.1])
     assert.throws(() => readAccurateReceipt({ ...row, chequeAmount }));
   assert.throws(() => readAccurateReceipt({ ...row, useCredit: true }));
+});
+
+// Run after HTTP/file cleanup hooks, including when an earlier teardown failed.
+afterDatabase(async () => {
+  try {
+    await closeDb();
+  } finally {
+    await closeTestDatabases();
+  }
 });
