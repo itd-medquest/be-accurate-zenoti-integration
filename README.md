@@ -59,11 +59,11 @@ API tersedia di `http://localhost:4000`. Endpoint pemeriksaan layanan: `GET /api
 
 ### Deployment dengan database kosong
 
-Struktur database dapat dibuat dari migration di repository tanpa membawa data lokal. Untuk environment baru, jalankan migration lalu `npm run db:seed:admin` agar hanya akun super admin pertama yang dibuat, tanpa akun demo atau invoice simulasi. Panduan konfigurasi, perintah hasil build untuk runtime, dan perilaku saat seed dijalankan ulang tersedia di [panduan deployment](docs/deployment.md).
+Struktur database dibuat dari migration repository tanpa membawa data lokal. Ikuti [panduan utama setup MySQL untuk server dev](docs/mysql-migration.md): konfigurasi environment, migration, seed Super Admin pertama, setup PT. MMI, koneksi/tujuan Accurate, serta 8 mapping BCA/BNI untuk Penerimaan Penjualan. Panduan juga memuat kode akun perkiraan referensi, tarif, pembulatan, dan checklist UAT. Perilaku bootstrap akun saat dijalankan ulang dijelaskan pada [panduan deployment](docs/deployment.md).
 
 ### Memindahkan akun lokal lama
 
-Gunakan export terenkripsi dan import ke MySQL kosong. Password, role, dan status akun dipertahankan; invoice, history, sesi, serta konfigurasi Accurate tidak disalin. Migration PostgreSQL lama tetap diarsipkan; hanya folder `src/db/migrations/mysql/` dijalankan. Ikuti [panduan migrasi MySQL](docs/mysql-migration.md).
+Langkah ini opsional dan terpisah dari setup server baru. Gunakan export terenkripsi dan import ke MySQL kosong sebelum membuat perusahaan atau konfigurasi. Password, role, dan status akun dipertahankan; invoice, history, sesi, serta konfigurasi Accurate tidak disalin. Migration PostgreSQL lama tetap diarsipkan; hanya `src/db/migrations/mysql/` dijalankan. Ikuti [panduan backup sumber dan transfer akun PostgreSQL/PGlite](docs/postgresql-user-transfer.md).
 
 ## Konfigurasi environment
 
