@@ -8,7 +8,7 @@ export async function health() {
   return {
     status: 'ok',
     mode: config.INTEGRATION_MODE,
-    queue: 'postgresql',
+    queue: 'mysql',
     timezone: 'Asia/Jakarta',
   };
 }

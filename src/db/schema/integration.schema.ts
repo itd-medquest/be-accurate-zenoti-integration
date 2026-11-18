@@ -1,16 +1,16 @@
-import { boolean, integer, pgTable, text } from 'drizzle-orm/pg-core';
-import { time } from './columns.js';
-export const integrationConfigs = pgTable('integration_configs', {
-  id: text('id').primaryKey(),
+import { boolean, int, mysqlTable, text, varchar } from 'drizzle-orm/mysql-core';
+import { time, currentTime } from './columns.js';
+export const integrationConfigs = mysqlTable('integration_configs', {
+  id: varchar('id', { length: 100 }).primaryKey(),
   enabled: boolean('enabled').notNull().default(true),
   encryptedSecret: text('encrypted_secret'),
-  updatedAt: time('updated_at').notNull().defaultNow(),
+  updatedAt: time('updated_at').notNull().default(currentTime),
 });
 
-export const schedulerConfigs = pgTable('scheduler_configs', {
-  id: text('id').primaryKey(),
+export const schedulerConfigs = mysqlTable('scheduler_configs', {
+  id: varchar('id', { length: 100 }).primaryKey(),
   enabled: boolean('enabled').notNull().default(false),
-  intervalMinutes: integer('interval_minutes').notNull().default(60),
+  intervalMinutes: int('interval_minutes').notNull().default(60),
   nextRunAt: time('next_run_at'),
   lastRunAt: time('last_run_at'),
 });

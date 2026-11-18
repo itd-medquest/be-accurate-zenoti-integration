@@ -13,7 +13,15 @@ export function findCredential(userId: string, context: DbExecutor = db) {
   });
 }
 
-export function replacePassword(id: string, previous: string, password: string, context: DbExecutor) {
-  return context.update(account).set({ password, updatedAt: new Date() })
-    .where(and(eq(account.id, id), eq(account.password, previous))).returning({ id: account.id });
+export async function replacePassword(
+  id: string,
+  previous: string,
+  password: string,
+  context: DbExecutor,
+) {
+  const [result] = await context
+    .update(account)
+    .set({ password, updatedAt: new Date() })
+    .where(and(eq(account.id, id), eq(account.password, previous)));
+  return result.affectedRows === 1 ? [{ id }] : [];
 }

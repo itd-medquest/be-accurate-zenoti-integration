@@ -1,35 +1,35 @@
-import { boolean, pgTable, text } from 'drizzle-orm/pg-core';
-import { time } from './columns.js';
-export const user = pgTable('users', {
-  id: text('id').primaryKey(),
+import { boolean, mysqlTable, text, varchar } from 'drizzle-orm/mysql-core';
+import { time, currentTime } from './columns.js';
+export const user = mysqlTable('users', {
+  id: varchar('id', { length: 100 }).primaryKey(),
   name: text('name').notNull(),
-  email: text('email').notNull().unique(),
+  email: varchar('email', { length: 320 }).notNull().unique(),
   emailVerified: boolean('email_verified').notNull().default(false),
   image: text('image'),
-  role: text('role').notNull().default('viewer'),
+  role: varchar('role', { length: 255 }).notNull().default('viewer'),
   active: boolean('active').notNull().default(true),
-  createdAt: time('created_at').notNull().defaultNow(),
-  updatedAt: time('updated_at').notNull().defaultNow(),
+  createdAt: time('created_at').notNull().default(currentTime),
+  updatedAt: time('updated_at').notNull().default(currentTime),
 });
 
-export const session = pgTable('sessions', {
-  id: text('id').primaryKey(),
+export const session = mysqlTable('sessions', {
+  id: varchar('id', { length: 100 }).primaryKey(),
   expiresAt: time('expires_at').notNull(),
-  token: text('token').notNull().unique(),
-  createdAt: time('created_at').notNull().defaultNow(),
-  updatedAt: time('updated_at').notNull().defaultNow(),
-  ipAddress: text('ip_address'),
+  token: varchar('token', { length: 255 }).notNull().unique(),
+  createdAt: time('created_at').notNull().default(currentTime),
+  updatedAt: time('updated_at').notNull().default(currentTime),
+  ipAddress: varchar('ip_address', { length: 255 }),
   userAgent: text('user_agent'),
-  userId: text('user_id')
+  userId: varchar('user_id', { length: 100 })
     .notNull()
     .references(() => user.id, { onDelete: 'cascade' }),
 });
 
-export const account = pgTable('accounts', {
-  id: text('id').primaryKey(),
-  accountId: text('account_id').notNull(),
-  providerId: text('provider_id').notNull(),
-  userId: text('user_id')
+export const account = mysqlTable('accounts', {
+  id: varchar('id', { length: 100 }).primaryKey(),
+  accountId: varchar('account_id', { length: 255 }).notNull(),
+  providerId: varchar('provider_id', { length: 255 }).notNull(),
+  userId: varchar('user_id', { length: 100 })
     .notNull()
     .references(() => user.id, { onDelete: 'cascade' }),
   accessToken: text('access_token'),
@@ -38,16 +38,16 @@ export const account = pgTable('accounts', {
   accessTokenExpiresAt: time('access_token_expires_at'),
   refreshTokenExpiresAt: time('refresh_token_expires_at'),
   scope: text('scope'),
-  password: text('password'),
-  createdAt: time('created_at').notNull().defaultNow(),
-  updatedAt: time('updated_at').notNull().defaultNow(),
+  password: varchar('password', { length: 255 }),
+  createdAt: time('created_at').notNull().default(currentTime),
+  updatedAt: time('updated_at').notNull().default(currentTime),
 });
 
-export const verification = pgTable('verifications', {
-  id: text('id').primaryKey(),
-  identifier: text('identifier').notNull(),
+export const verification = mysqlTable('verifications', {
+  id: varchar('id', { length: 100 }).primaryKey(),
+  identifier: varchar('identifier', { length: 255 }).notNull(),
   value: text('value').notNull(),
   expiresAt: time('expires_at').notNull(),
-  createdAt: time('created_at').notNull().defaultNow(),
-  updatedAt: time('updated_at').notNull().defaultNow(),
+  createdAt: time('created_at').notNull().default(currentTime),
+  updatedAt: time('updated_at').notNull().default(currentTime),
 });

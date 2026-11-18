@@ -15,7 +15,7 @@ export function lockNextAvailable(context: DbExecutor = db) {
   return context
     .select()
     .from(jobs)
-    .where(and(eq(jobs.status, 'QUEUED'), sql`${jobs.availableAt} <= now()`))
+    .where(and(eq(jobs.status, 'QUEUED'), sql`${jobs.availableAt} <= CURRENT_TIMESTAMP(3)`))
     .orderBy(jobs.createdAt)
     .limit(1)
     .for('update', { skipLocked: true });
@@ -33,6 +33,11 @@ export function lockStale(context: DbExecutor = db) {
   return context
     .select()
     .from(jobs)
-    .where(and(eq(jobs.status, 'RUNNING'), sql`${jobs.lockedAt} < now() - interval '5 minutes'`))
+    .where(
+      and(
+        eq(jobs.status, 'RUNNING'),
+        sql`${jobs.lockedAt} < CURRENT_TIMESTAMP(3) - interval 5 minute`,
+      ),
+    )
     .for('update', { skipLocked: true });
 }

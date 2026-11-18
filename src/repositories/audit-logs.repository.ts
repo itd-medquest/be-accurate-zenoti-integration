@@ -26,8 +26,8 @@ export function customerRequestsForName(databaseId: string, name: string, contex
     .where(
       and(
         eq(auditLogs.action, 'accurate.customer.requested'),
-        sql`${auditLogs.details}->>'databaseId' = ${databaseId}`,
-        sql`lower(${auditLogs.details}->>'name') = ${name.toLocaleLowerCase('id')}`,
+        sql`(JSON_UNQUOTE(JSON_EXTRACT(${auditLogs.details}, '$.databaseId')) COLLATE utf8mb4_0900_bin) = ${databaseId}`,
+        sql`lower((JSON_UNQUOTE(JSON_EXTRACT(${auditLogs.details}, '$.name')) COLLATE utf8mb4_0900_bin)) = ${name.toLocaleLowerCase('id')}`,
       ),
     );
 }

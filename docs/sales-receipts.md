@@ -10,14 +10,14 @@ Modul menggunakan pembayaran dari PDF/Excel invoice yang sama. Faktur harus suda
 4. Centang pemeriksaan dan konfirmasikan Kirim ke Accurate. Backend memeriksa ulang data, menyimpan payload final, lalu memasukkan penerimaan ke antrean tersendiri.
 5. Status Berhasil memerlukan pencocokan detail receipt dan pengurangan piutang; respons HTTP 200 saja tidak cukup.
 
-Upload, membuka review, menyimpan mapping, dan menyimpan draft tidak mengirim transaksi. Pengiriman memerlukan koneksi Accurate aktif dalam mode aktual dan hak akses token yang sesuai. Worker berjalan bersama scheduler backend; untuk worker terpisah gunakan PostgreSQL, seperti pada pengiriman faktur.
+Upload, membuka review, menyimpan mapping, dan menyimpan draft tidak mengirim transaksi. Pengiriman memerlukan koneksi Accurate aktif dalam mode aktual dan hak akses token yang sesuai. Worker berjalan bersama scheduler backend; untuk worker terpisah gunakan MySQL, seperti pada pengiriman faktur.
 
 ## Tarif dan nominal
 
 | Bank | Kartu kredit | Debit | QRIS | Transfer rekening langsung |
-| --- | --- | --- | --- | --- |
-| BCA | 2% | 1,8% | 0,7% | 0% |
-| BNI | 2% | 1,8% | 0,7% | 0% |
+| ---- | ------------ | ----- | ---- | -------------------------- |
+| BCA  | 2%           | 1,8%  | 0,7% | 0%                         |
+| BNI  | 2%           | 1,8%  | 0,7% | 0%                         |
 
 Biaya selalu dibulatkan **ke atas** ke rupiah penuh. Contoh QRIS Rp200.001: biaya Rp1.401, bersih bank Rp198.600. Backend menghitung tarif; request tidak dapat menentukan tarif atau nominal biaya sendiri. Nominal didukung sampai Rp2.147.483.647 per kelompok pembayaran.
 
@@ -48,15 +48,15 @@ Metode manual pada receipt referensi tidak digunakan untuk menebak metode sumber
 
 ## Status dan pemulihan
 
-| Status | Tindakan |
-| --- | --- |
-| Belum direview | Buat draft dari pembayaran sumber |
-| Draft | Periksa, simpan, lalu konfirmasi pengiriman |
-| Dalam antrean / Sedang dikirim | Tunggu; halaman memperbarui status otomatis |
-| Berhasil | Nomor/ID receipt tersimpan setelah hasil terverifikasi |
-| Perlu diperiksa, belum ada upaya POST | Kembalikan ke draft untuk pemeriksaan ulang |
+| Status                                     | Tindakan                                                                            |
+| ------------------------------------------ | ----------------------------------------------------------------------------------- |
+| Belum direview                             | Buat draft dari pembayaran sumber                                                   |
+| Draft                                      | Periksa, simpan, lalu konfirmasi pengiriman                                         |
+| Dalam antrean / Sedang dikirim             | Tunggu; halaman memperbarui status otomatis                                         |
+| Berhasil                                   | Nomor/ID receipt tersimpan setelah hasil terverifikasi                              |
+| Perlu diperiksa, belum ada upaya POST      | Kembalikan ke draft untuk pemeriksaan ulang                                         |
 | Perlu diperiksa, respons eksplisit ditolak | Kembalikan ke draft hanya setelah pencarian read-only memastikan nomor belum dibuat |
-| Perlu diperiksa, hasil POST belum pasti | Gunakan Periksa hasil di Accurate; tidak ada POST ulang otomatis |
+| Perlu diperiksa, hasil POST belum pasti    | Gunakan Periksa hasil di Accurate; tidak ada POST ulang otomatis                    |
 
 Proses SENDING yang terputus lebih dari lima menit dipindahkan ke Perlu diperiksa, bukan diantre ulang. Jika receipt belum ditemukan setelah hasil yang tidak pasti, operasi tetap ditahan. Ketiadaan hasil pencarian sesaat bukan bukti bahwa transaksi tidak pernah tercipta. Draft/history tetap dapat dibaca ketika sumber berubah atau koneksi tidak tersedia.
 
@@ -75,34 +75,34 @@ Filter/pagination diterapkan setelah penggabungan sumber. Untuk volume besar, uk
 
 Super Admin dan Finance dapat mengoperasikan penerimaan. Mapping hanya dapat disimpan Super Admin. Viewer mengikuti kebijakan akses modul operasional saat ini dan tidak mendapat akses penerimaan.
 
-| Endpoint | Fungsi |
-| --- | --- |
-| GET /api/receipts | Riwayat, ringkasan, pencarian, filter, pagination |
-| GET /api/receipts/configuration | Mapping dan tujuan dalam database aktif |
-| GET /api/receipts/accounts | Pencarian master kas/bank atau beban |
-| PUT /api/receipts/mappings | Mapping akun berversi |
-| POST /api/receipts/drafts | Prepare draft idempotent |
-| GET /api/receipts/:id | Detail, saldo terbaru untuk draft, serta aksi yang tersedia |
-| PUT /api/receipts/:id | Simpan draft berversi |
-| POST /api/receipts/:id/submit | Konfirmasi dan antrekan payload final |
-| POST /api/receipts/:id/check | Rekonsiliasi hasil melalui pembacaan vendor |
-| POST /api/receipts/:id/reopen | Kembali ke draft jika upaya belum dimulai atau ditolak secara pasti |
-| GET /api/receipts/reference?number=... | Pembacaan referensi keuangan dengan informasi kontak disaring |
+| Endpoint                               | Fungsi                                                              |
+| -------------------------------------- | ------------------------------------------------------------------- |
+| GET /api/receipts                      | Riwayat, ringkasan, pencarian, filter, pagination                   |
+| GET /api/receipts/configuration        | Mapping dan tujuan dalam database aktif                             |
+| GET /api/receipts/accounts             | Pencarian master kas/bank atau beban                                |
+| PUT /api/receipts/mappings             | Mapping akun berversi                                               |
+| POST /api/receipts/drafts              | Prepare draft idempotent                                            |
+| GET /api/receipts/:id                  | Detail, saldo terbaru untuk draft, serta aksi yang tersedia         |
+| PUT /api/receipts/:id                  | Simpan draft berversi                                               |
+| POST /api/receipts/:id/submit          | Konfirmasi dan antrekan payload final                               |
+| POST /api/receipts/:id/check           | Rekonsiliasi hasil melalui pembacaan vendor                         |
+| POST /api/receipts/:id/reopen          | Kembali ke draft jika upaya belum dimulai atau ditolak secara pasti |
+| GET /api/receipts/reference?number=... | Pembacaan referensi keuangan dengan informasi kontak disaring       |
 
 ## Accurate dan migration
 
 Endpoint vendor relatif terhadap host database yang diverifikasi dengan prefix /accurate:
 
-| Endpoint | Scope |
-| --- | --- |
-| GET /api/glaccount/list.do, detail.do | glaccount_view |
-| GET /api/sales-invoice/detail.do | sales_invoice_view |
+| Endpoint                                  | Scope              |
+| ----------------------------------------- | ------------------ |
+| GET /api/glaccount/list.do, detail.do     | glaccount_view     |
+| GET /api/sales-invoice/detail.do          | sales_invoice_view |
 | GET /api/sales-receipt/list.do, detail.do | sales_receipt_view |
-| POST /api/sales-receipt/save.do (JSON) | sales_receipt_save |
+| POST /api/sales-receipt/save.do (JSON)    | sales_receipt_save |
 
 Kontrak request berasal dari OpenAPI Accurate versi 1.6041.5093 dan hubungan nominal diperiksa dari respons referensi yang diberikan pemilik project. Collection Postman dibaca sebagai referensi; script dan credential di dalamnya tidak disalin ke repository.
 
-Migration 0005 menambah tabel receipt_account_mappings dan accurate_receipts. Migration 0006 menambahkan metadata verification untuk identitas invoice/customer/mata uang/akun, saldo sebelum write, serta penanda penolakan eksplisit. Migration lama tidak diurut ulang atau diubah. File SQL diperiksa terhadap byte NUL, UTF-8 rusak, dan file kosong pada build serta sebelum migration dijalankan. Jangan reset database untuk memperbaiki file migration yang rusak; pulihkan source SQL dan build ulang.
+Arsip migration PostgreSQL 0005 menambah tabel receipt_account_mappings dan accurate_receipts. Migration 0006 menambahkan metadata verification untuk identitas invoice/customer/mata uang/akun, saldo sebelum write, serta penanda penolakan eksplisit. Migration PostgreSQL lama tidak diurut ulang atau diubah. Pada MySQL, gunakan baseline/jurnal tersendiri di `src/db/migrations/mysql/`; lihat [panduan migrasi](mysql-migration.md). File SQL diperiksa terhadap byte NUL, UTF-8 rusak, dan file kosong pada build serta sebelum migration dijalankan. Jangan reset database untuk memperbaiki file migration yang rusak; pulihkan source SQL dan build ulang.
 
 ## Validasi dan batas UAT
 

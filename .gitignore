@@ -36,6 +36,7 @@ blob-report/
 /temp/
 *.bak
 *.dump
+*.encrypted.json
 *.sqlite
 *.sqlite3
 

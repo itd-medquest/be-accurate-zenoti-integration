@@ -1,7 +1,8 @@
-import { and, desc, eq, gte, ilike, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, or, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { invoices } from '../db/schema/index.js';
 import type { DbExecutor } from './unit-of-work.repository.js';
+import { isDuplicateEntry } from './mysql-errors.js';
 
 import type { InvoiceFilters, InvoicePaging } from '../validations/invoices.validation.js';
 function scope(filters: InvoiceFilters, asOf: Date) {
@@ -9,8 +10,13 @@ function scope(filters: InvoiceFilters, asOf: Date) {
   if (filters.branch) predicates.push(eq(invoices.branchId, filters.branch));
   if (filters.status) predicates.push(eq(invoices.syncStatus, filters.status));
   if (filters.search) {
-    const term = '%' + filters.search.replace(/[\\%_]/g, '\\$&') + '%';
-    predicates.push(or(ilike(invoices.number, term), ilike(invoices.customer, term))!);
+    const term = '%' + filters.search.toLowerCase().replace(/[!%_]/g, '!$&') + '%';
+    predicates.push(
+      or(
+        sql`lower(${invoices.number}) like ${term} escape '!'`,
+        sql`lower(${invoices.customer}) like ${term} escape '!'`,
+      )!,
+    );
   }
   return and(...predicates);
 }
@@ -37,7 +43,7 @@ export function listPage(
 }
 export function countScoped(filters: InvoiceFilters, asOf: Date, context: DbExecutor = db) {
   return context
-    .select({ total: sql.raw('count(*)::int').mapWith(Number) })
+    .select({ total: sql.raw('count(*)').mapWith(Number) })
     .from(invoices)
     .where(scope(filters, asOf));
 }
@@ -73,9 +79,26 @@ export function updateById(
 ) {
   return context.update(invoices).set(changes).where(eq(invoices.id, id));
 }
-export function insertMissingIds(data: (typeof invoices.$inferInsert)[], context: DbExecutor = db) {
-  return context.insert(invoices).values(data).onConflictDoNothing().returning({ id: invoices.id });
+export async function seedMissing(
+  data: (typeof invoices.$inferInsert)[],
+  context: DbExecutor = db,
+) {
+  const inserted: (typeof invoices.$inferSelect)[] = [];
+  for (const row of data) {
+    try {
+      await context.insert(invoices).values(row);
+    } catch (error) {
+      if (isDuplicateEntry(error)) continue;
+      throw error;
+    }
+    const [created] = await context.select().from(invoices).where(eq(invoices.id, row.id));
+    if (created) inserted.push(created);
+  }
+  return inserted;
 }
-export function seedMissing(data: (typeof invoices.$inferInsert)[], context: DbExecutor = db) {
-  return context.insert(invoices).values(data).onConflictDoNothing().returning();
+export async function insertMissingIds(
+  data: (typeof invoices.$inferInsert)[],
+  context: DbExecutor = db,
+) {
+  return (await seedMissing(data, context)).map(({ id }) => ({ id }));
 }

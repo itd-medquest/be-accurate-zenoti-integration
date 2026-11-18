@@ -6,7 +6,14 @@ export const config = z
     FRONTEND_URL: z.url().default('http://localhost:3000'),
     BETTER_AUTH_URL: z.url().default('http://localhost:4000'),
     BETTER_AUTH_SECRET: z.string().min(32),
-    DATABASE_URL: z.string().min(1),
+    DATABASE_URL: z
+      .string()
+      .url()
+      .refine(
+        (value) => value.startsWith('mysql://'),
+        'DATABASE_URL harus memakai mysql://. PostgreSQL/PGlite hanya didukung sebagai sumber export akun.',
+      ),
+    DATABASE_SSL: z.enum(['true', 'false']).default('false'),
     INTEGRATION_MODE: z.enum(['simulation', 'live']).default('simulation'),
     RUN_WORKER: z.string().default('true'),
     IMPORT_PACKAGE_TAX_POLICY: z.enum(['blocked', 'proportional']).default('blocked'),
@@ -16,7 +23,6 @@ export const config = z
     NODE_ENV: z.string().default('development'),
   })
   .parse(process.env);
-if (config.NODE_ENV === 'production' && config.DATABASE_URL.startsWith('pglite:'))
-  throw new Error('PGlite hanya untuk demo lokal. Gunakan PostgreSQL untuk produksi.');
+
 // Live delivery is enabled explicitly through the encrypted Accurate connection settings.
 // Each submission records its destination and payload before entering the worker queue.

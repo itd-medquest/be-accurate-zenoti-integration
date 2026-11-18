@@ -1,3 +1,5 @@
+import { after as afterDatabase } from 'node:test';
+import { createTestDatabase, closeTestDatabases } from './helpers/mysql-database.js';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -6,7 +8,7 @@ import { nextMpaCustomerNumber } from '../src/utils/accurate-customer.js';
 import type { ImportCandidate } from '../src/types/import.types.js';
 
 Object.assign(process.env, {
-  DATABASE_URL: 'pglite:memory://',
+  DATABASE_URL: await createTestDatabase(),
   RUN_WORKER: 'false',
   INTEGRATION_MODE: 'simulation',
   BETTER_AUTH_SECRET: randomBytes(32).toString('hex'),
@@ -124,52 +126,44 @@ async function request(path: string, role = 'super_admin', method = 'GET', body?
 }
 before(async () => {
   await migrate();
-  await db
-    .insert(schema.branches)
-    .values({
-      id: 'customer-branch',
-      name: 'PT. MMI',
-      centerId: 'test-center',
-      accurateDatabaseId: 'demo',
-      accurateBranchId: 'JKT',
-    });
-  await db
-    .insert(schema.accurateDestinations)
-    .values({
-      branchId: 'customer-branch',
-      databaseId: '999',
-      databaseName: 'Test Company',
-      targetBranchId: '300',
-      targetBranchName: 'PT Mylab Prima Inovatif',
-    });
-  await db
-    .insert(schema.integrationConfigs)
-    .values({
-      id: 'accurate',
-      enabled: true,
-      encryptedSecret: encrypt(
-        JSON.stringify({
-          version: 1,
-          mode: 'live',
-          taxPolicy: 'gross-no-tax',
-          apiToken: 'test-customer-token',
-          signatureSecret: 'test-customer-secret',
-        }),
-      ),
-    });
+  await db.insert(schema.branches).values({
+    id: 'customer-branch',
+    name: 'PT. MMI',
+    centerId: 'test-center',
+    accurateDatabaseId: 'demo',
+    accurateBranchId: 'JKT',
+  });
+  await db.insert(schema.accurateDestinations).values({
+    branchId: 'customer-branch',
+    databaseId: '999',
+    databaseName: 'Test Company',
+    targetBranchId: '300',
+    targetBranchName: 'PT Mylab Prima Inovatif',
+  });
+  await db.insert(schema.integrationConfigs).values({
+    id: 'accurate',
+    enabled: true,
+    encryptedSecret: encrypt(
+      JSON.stringify({
+        version: 1,
+        mode: 'live',
+        taxPolicy: 'gross-no-tax',
+        apiToken: 'test-customer-token',
+        signatureSecret: 'test-customer-secret',
+      }),
+    ),
+  });
   for (const role of ['super_admin', 'finance', 'viewer']) {
     await db
       .insert(schema.user)
       .values({ id: role, name: role, role, email: `${role}@example.test` });
-    await db
-      .insert(schema.account)
-      .values({
-        id: randomUUID(),
-        userId: role,
-        accountId: role,
-        providerId: 'credential',
-        password: await hashPassword('Test-password-8675309!'),
-      });
+    await db.insert(schema.account).values({
+      id: randomUUID(),
+      userId: role,
+      accountId: role,
+      providerId: 'credential',
+      password: await hashPassword('Test-password-8675309!'),
+    });
   }
   await new Promise<void>((resolve) => {
     server = app.listen(0, '127.0.0.1', resolve);
@@ -236,17 +230,15 @@ async function fixture() {
   await db
     .insert(schema.importBatches)
     .values({ id: batchId, branchId: 'customer-branch', uploaderId: 'super_admin', mode: 'live' });
-  await db
-    .insert(schema.importFiles)
-    .values({
-      id: fileId,
-      batchId,
-      name: 'anonymous.pdf',
-      storedName: randomUUID(),
-      hash: randomUUID(),
-      size: 100,
-      format: 'PDF',
-    });
+  await db.insert(schema.importFiles).values({
+    id: fileId,
+    batchId,
+    name: 'anonymous.pdf',
+    storedName: randomUUID(),
+    hash: randomUUID(),
+    size: 100,
+    format: 'PDF',
+  });
   await db
     .insert(schema.importRows)
     .values({ id: rowId, batchId, fileId, position: 1, candidate, status: 'REVIEW' });
@@ -482,4 +474,13 @@ test('a mismatched post-save detail is never accepted as a successful creation',
   wrongDetail = false;
   assert.equal((await request(path, 'super_admin', 'POST', input)).status, 200);
   assert.equal(writes, before + 1);
+});
+
+// Run after HTTP/file cleanup hooks, including when an earlier teardown failed.
+afterDatabase(async () => {
+  try {
+    await closeDb();
+  } finally {
+    await closeTestDatabases();
+  }
 });

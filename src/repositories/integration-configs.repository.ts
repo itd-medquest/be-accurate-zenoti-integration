@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { integrationConfigs } from '../db/schema/index.js';
 import type { DbExecutor } from './unit-of-work.repository.js';
@@ -7,7 +7,10 @@ export function seedMissing(
   data: (typeof integrationConfigs.$inferInsert)[],
   context: DbExecutor = db,
 ) {
-  return context.insert(integrationConfigs).values(data).onConflictDoNothing();
+  return context
+    .insert(integrationConfigs)
+    .values(data)
+    .onDuplicateKeyUpdate({ set: { id: sql`${integrationConfigs.id}` } });
 }
 
 export function list(context: DbExecutor = db) {
@@ -28,8 +31,5 @@ export function configure(
   changes: Partial<typeof integrationConfigs.$inferInsert>,
   context: DbExecutor = db,
 ) {
-  return context
-    .insert(integrationConfigs)
-    .values(data)
-    .onConflictDoUpdate({ target: integrationConfigs.id, set: changes });
+  return context.insert(integrationConfigs).values(data).onDuplicateKeyUpdate({ set: changes });
 }

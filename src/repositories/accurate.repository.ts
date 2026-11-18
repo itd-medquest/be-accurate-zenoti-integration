@@ -7,6 +7,7 @@ import {
   invoices,
 } from '../db/schema/index.js';
 import type { DbExecutor } from './unit-of-work.repository.js';
+import { isDuplicateEntry } from './mysql-errors.js';
 
 export const destination = (branchId: string, context: DbExecutor = db) =>
   context.query.accurateDestinations.findFirst({
@@ -21,10 +22,7 @@ export function saveDestination(
   return context
     .insert(accurateDestinations)
     .values(data)
-    .onConflictDoUpdate({
-      target: accurateDestinations.branchId,
-      set: { ...data, updatedAt: new Date() },
-    });
+    .onDuplicateKeyUpdate({ set: { ...data, updatedAt: new Date() } });
 }
 export function mappings(branchId: string, databaseId: string, context: DbExecutor = db) {
   return context
@@ -38,13 +36,7 @@ export function saveMapping(data: typeof accurateMappings.$inferInsert, context:
   return context
     .insert(accurateMappings)
     .values(data)
-    .onConflictDoUpdate({
-      target: [
-        accurateMappings.branchId,
-        accurateMappings.databaseId,
-        accurateMappings.kind,
-        accurateMappings.sourceKey,
-      ],
+    .onDuplicateKeyUpdate({
       set: {
         targetId: data.targetId,
         targetCode: data.targetCode,
@@ -68,14 +60,33 @@ export const deliveryByNumber = (databaseId: string, number: string, context: Db
   });
 export const branchHasDeliveries = (branchId: string, context: DbExecutor = db) =>
   context.query.accurateDeliveries.findFirst({ where: eq(accurateDeliveries.branchId, branchId) });
-export const createDelivery = (data: typeof accurateDeliveries.$inferInsert, context: DbExecutor) =>
-  context.insert(accurateDeliveries).values(data).onConflictDoNothing().returning();
-export function claimDelivery(invoiceId: string, context: DbExecutor = db) {
+export async function createDelivery(
+  data: typeof accurateDeliveries.$inferInsert,
+  context: DbExecutor,
+) {
+  try {
+    await context.insert(accurateDeliveries).values(data);
+  } catch (error) {
+    if (isDuplicateEntry(error)) return [];
+    throw error;
+  }
   return context
+    .select()
+    .from(accurateDeliveries)
+    .where(eq(accurateDeliveries.invoiceId, data.invoiceId));
+}
+export async function claimDelivery(invoiceId: string, context: DbExecutor = db) {
+  const [result] = await context
     .update(accurateDeliveries)
     .set({ attemptedAt: new Date(), status: 'SENDING', updatedAt: new Date() })
-    .where(and(eq(accurateDeliveries.invoiceId, invoiceId), isNull(accurateDeliveries.attemptedAt)))
-    .returning();
+    .where(
+      and(eq(accurateDeliveries.invoiceId, invoiceId), isNull(accurateDeliveries.attemptedAt)),
+    );
+  if (result.affectedRows !== 1) return [];
+  return context
+    .select()
+    .from(accurateDeliveries)
+    .where(eq(accurateDeliveries.invoiceId, invoiceId));
 }
 export function updateDelivery(
   invoiceId: string,

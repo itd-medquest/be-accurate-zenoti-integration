@@ -1,3 +1,6 @@
-import { timestamp } from 'drizzle-orm/pg-core';
+import { datetime } from 'drizzle-orm/mysql-core';
+import { sql } from 'drizzle-orm';
 
-export const time = (name: string) => timestamp(name, { withTimezone: true });
+/** All persisted instants use UTC with millisecond precision, including dates before 1970. */
+export const time = (name: string) => datetime(name, { mode: 'date', fsp: 3 });
+export const currentTime = sql`CURRENT_TIMESTAMP(3)`;
