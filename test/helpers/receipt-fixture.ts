@@ -59,7 +59,7 @@ export function receiptPdf(options?: {
     [235, 72, '1'],
     [24, 16, 'https://example.test/Receipt.aspx?InvId=11111111-1111-4111-8111-111111111111'],
   ];
-  if (options?.receiptNumber) cells[1][2] = options.receiptNumber;
+  if (options?.receiptNumber !== undefined) cells[1][2] = options.receiptNumber;
   if (options?.invoiceNumber)
     cells.push([197, 638, 'Invoice No.'], [257, 638, options.invoiceNumber]);
   if (options?.truncatedId)

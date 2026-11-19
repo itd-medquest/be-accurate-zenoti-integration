@@ -2,6 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { sourceReceiptNumber } from '../src/utils/receipt-number.js';
 import { emptyCandidate } from '../src/utils/import-validation.js';
+import { candidateErrors } from '../src/utils/import-validation.js';
+import { mkdtemp, writeFile, unlink, rmdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { receiptPdf } from './helpers/receipt-fixture.js';
+import { parsePdf } from '../src/utils/parsers/pdf.js';
 
 const payment = {
   id: 'source:receipt:MPA-R-R3902:1',
@@ -93,4 +99,32 @@ test('empty and zero-only source receipt values are absent, while numbered recei
     );
   }
   assert.equal(sourceReceiptNumber([{ ...payment, id: 'source:receipt:MPA-0:1' }], []), 'MPA-0');
+});
+
+test('an actual uploaded PDF with a blank or zero receipt remains valid when its invoice identity is present', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'intgrte-missing-receipt-'));
+  const path = join(folder, 'receipt.pdf');
+  try {
+    for (const receiptNumber of ['', '0']) {
+      await writeFile(path, receiptPdf({ receiptNumber, invoiceNumber: 'MPA-R-4758' }));
+      const [candidate] = await parsePdf(path);
+      assert.equal(candidate.receiptNumber, receiptNumber);
+      assert.equal(candidate.sourceInvoiceNumber, 'MPA-R-4758');
+      assert.deepEqual(candidateErrors(candidate), []);
+      assert.equal(sourceReceiptNumber(candidate.payments, [candidate]), null);
+      assert.ok(
+        candidateErrors({ ...candidate, sourceId: '' }).some((message) =>
+          message.includes('Identitas invoice sumber'),
+        ),
+      );
+      assert.ok(
+        candidateErrors({ ...candidate, number: '', sourceInvoiceNumber: undefined }).some(
+          (message) => message.includes('Nomor invoice/receipt'),
+        ),
+      );
+    }
+  } finally {
+    await unlink(path).catch(() => {});
+    await rmdir(folder);
+  }
 });
