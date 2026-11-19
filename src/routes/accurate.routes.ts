@@ -18,13 +18,13 @@ accurateRouter.get('/masters', operate, validate({ query: masterQuery }), contro
 accurateRouter.get('/delivered-invoices', operate, controller.delivered);
 accurateRouter.get(
   '/imports/:batchId/rows/:rowId/customer/prepare',
-  admin,
+  operate,
   validate({ params: mappingParams, query: customerPrepareQuery }),
   controller.prepareCustomer,
 );
 accurateRouter.post(
   '/imports/:batchId/rows/:rowId/customer',
-  admin,
+  operate,
   validate({ params: mappingParams, body: customerCreateInput }),
   controller.createCustomer,
 );
