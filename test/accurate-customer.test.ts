@@ -276,12 +276,12 @@ test('numeric MPA sequence handles digit boundaries, leading zeroes and large va
   );
   assert.throws(() => nextMpaCustomerNumber([{ customerNo: 'MPA-invalid' }]), /tidak ditemukan/);
 });
-test('only super admin can prepare or create; denied requests never contact Accurate', async () => {
+test('viewer and unauthenticated users cannot prepare or create customers or contact Accurate', async () => {
   const { path } = await fixture();
   const reads = visits.length;
-  for (const role of ['finance', 'viewer']) {
-    assert.equal((await request(`${path}/prepare?version=1`, role)).status, 403);
-    assert.equal((await request(path, role, 'POST', {})).status, 403);
+  for (const [role, status] of [['viewer', 403], ['anonymous', 401]] as const) {
+    assert.equal((await request(`${path}/prepare?version=1`, role)).status, status);
+    assert.equal((await request(path, role, 'POST', {})).status, status);
   }
   assert.equal(visits.length, reads);
 });
@@ -474,6 +474,42 @@ test('a mismatched post-save detail is never accepted as a successful creation',
   wrongDetail = false;
   assert.equal((await request(path, 'super_admin', 'POST', input)).status, 200);
   assert.equal(writes, before + 1);
+});
+
+test('finance can prepare, create and map a customer with audited identity and idempotent replay', async () => {
+  const { path, batchId, rowId } = await fixture();
+  const prepared = await request(`${path}/prepare?version=1`, 'finance');
+  assert.equal(prepared.status, 200);
+  const plan = await prepared.json();
+  const input = body(plan, 'Finance Created Customer');
+  const before = writes;
+  const result = await request(path, 'finance', 'POST', input);
+  assert.equal(result.status, 200, JSON.stringify(await result.clone().json()));
+  const customer = await result.json();
+  assert.equal(customer.code, plan.customerNo);
+  assert.equal(writes, before + 1);
+  assert.equal((await request(path, 'finance', 'POST', input)).status, 200);
+  assert.equal(writes, before + 1);
+  const audit = await db.query.auditLogs.findFirst({
+    where: eq(schema.auditLogs.id, plan.requestId),
+  });
+  assert.equal(audit?.actorId, 'finance');
+  assert.equal(audit?.action, 'accurate.customer.requested');
+  const mapping = await request(`/accurate/imports/${batchId}/rows/${rowId}/mapping`, 'finance', 'PUT', {
+    version: 1,
+    kind: 'customer',
+    masterId: customer.id,
+  });
+  assert.equal(mapping.status, 200, JSON.stringify(await mapping.clone().json()));
+  const row = await db.query.importRows.findFirst({ where: eq(schema.importRows.id, rowId) });
+  assert.equal(row?.candidate.accurateSelection?.customer?.code, plan.customerNo);
+  assert.equal((await request('/settings', 'finance')).status, 403);
+  assert.equal(
+    (await request('/accurate/destinations/customer-branch', 'finance', 'PUT', {
+      targetBranchId: '300',
+    })).status,
+    403,
+  );
 });
 
 // Run after HTTP/file cleanup hooks, including when an earlier teardown failed.
