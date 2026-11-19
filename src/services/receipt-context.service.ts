@@ -1,13 +1,22 @@
 import * as receipts from '../repositories/receipts.repository.js';
 import * as users from '../repositories/user.repository.js';
+import * as audits from '../repositories/audit-logs.repository.js';
 import type { DbExecutor } from '../repositories/unit-of-work.repository.js';
 import type { accurateReceipts } from '../db/schema/receipts.schema.js';
 import { HttpError } from '../utils/http-error.js';
 import { receiptSourceGroups } from '../utils/receipt-amounts.js';
+import { pendingReceiptNumber, sourceReceiptNumber } from '../utils/receipt-number.js';
+import type { ReceiptSourceGroup } from '../types/receipt.types.js';
 export type Receipt = typeof accurateReceipts.$inferSelect;
 export type Source = Awaited<ReturnType<typeof receipts.sources>>[number];
-export const publicDraft = ({ payload: _payload, verification: _verification, ...row }: Receipt) =>
-  row;
+export const publicDraft = ({
+  payload: _payload,
+  verification: _verification,
+  ...row
+}: Receipt) => ({
+  ...row,
+  number: row.number === pendingReceiptNumber(row.id) ? '' : row.number,
+});
 export async function lockActor(id: string, roles: string[], context: DbExecutor) {
   const [actor] = await users.lockByIds([id], context);
   if (!actor?.active || !roles.includes(actor.role))
@@ -51,7 +60,38 @@ export function singleReceiptGroups(source: Source) {
   if (groups.length > 1)
     throw new HttpError(
       422,
-      'Faktur memiliki beberapa pembayaran terpisah. No. Bukti wajib persis nomor faktur; penerimaan ini perlu ditangani manual di Accurate.',
+      'Faktur memiliki beberapa pembayaran terpisah. Penerimaan ini perlu ditangani manual di Accurate.',
     );
   return groups;
+}
+export async function receiptNumber(
+  source: Source,
+  group: ReceiptSourceGroup,
+  context?: DbExecutor,
+) {
+  const candidates = await receipts.sourceCandidates(source.invoiceId, context);
+  try {
+    return sourceReceiptNumber(
+      group.payments,
+      candidates.map((row) => row.candidate).filter((row) => row.sourceId === source.sourceId),
+    );
+  } catch (cause) {
+    throw new HttpError(422, cause instanceof Error ? cause.message : 'Nomor receipt tidak valid.');
+  }
+}
+
+export async function manualReceiptNumber(row: Receipt, context?: DbExecutor) {
+  if (row.number === pendingReceiptNumber(row.id)) return null;
+  const records = await audits.findByActionAndEntity('receipt.number.manual', row.id, context);
+  return records.some(
+    ({ details }) =>
+      typeof details === 'object' &&
+      details !== null &&
+      'number' in details &&
+      details.number === row.number &&
+      'sourceFingerprint' in details &&
+      details.sourceFingerprint === row.sourceFingerprint,
+  )
+    ? row.number
+    : null;
 }

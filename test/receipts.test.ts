@@ -149,7 +149,7 @@ before(async () => {
     items: [],
     payments: [
       {
-        id: 'SOURCE-PAYMENT-1',
+        id: 'SOURCE-EXAMPLE:receipt:RECEIPT-EXAMPLE:1',
         method: 'qris',
         amount: 200001,
         paidAt: '2026-11-01T00:00:00+07:00',
@@ -327,6 +327,12 @@ test('draft save calculates approved fees server-side and rejects stale versions
     version: 1,
   };
   assert.equal((await request('/' + draftId, 'PUT', { ...body, rateBps: 0 })).status, 400);
+  for (const receiptNumber of ['', '0', '000', '  ', 'A\nB', 'X'.repeat(256)])
+    assert.equal((await request('/' + draftId, 'PUT', { ...body, receiptNumber })).status, 400);
+  assert.equal(
+    (await request('/' + draftId, 'PUT', { ...body, receiptNumber: 'OVERRIDE' })).status,
+    422,
+  );
   assert.equal((await request('/' + draftId, 'PUT', { ...body, mappingVersion: 99 })).status, 409);
   const previousCode = accounts[0].no;
   try {

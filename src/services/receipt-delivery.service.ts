@@ -10,6 +10,8 @@ import { AccurateReceiptRejected } from './integrations/accurate-client.js';
 import {
   draftSource,
   singleReceiptGroups,
+  receiptNumber,
+  manualReceiptNumber,
   lockActor,
   publicDraft,
   type Receipt,
@@ -59,12 +61,17 @@ export async function receiptBalance(row: Receipt) {
 }
 
 async function preflight(row: Receipt) {
-  const { source } = await draftSource(row);
+  const { source, group } = await draftSource(row);
   singleReceiptGroups(source);
-  if (row.number !== source.targetNumber)
+  // Queued payloads retain the number reviewed before the numbering rule changed.
+  const number =
+    row.payload?.number ?? (await receiptNumber(source, group)) ?? (await manualReceiptNumber(row));
+  if (!number)
+    throw new HttpError(422, 'Isi No. Receipt dan simpan draft sebelum mengirim ke Accurate.');
+  if (row.number !== number)
     throw new HttpError(
       409,
-      'No. Bukti harus sama dengan nomor faktur. Simpan ulang draft sebelum mengirim.',
+      'No. Bukti harus sesuai nomor receipt. Simpan ulang draft sebelum mengirim.',
     );
   const { client, profile, connectionId, fingerprint } = await connectedAccurate(
     true,

@@ -4,10 +4,20 @@ import {
   accurateDeliveries,
   accurateReceipts,
   invoices,
+  importRows,
   receiptAccountMappings,
 } from '../db/schema/index.js';
 import type { DbExecutor } from './unit-of-work.repository.js';
 import { isDuplicateEntry } from './mysql-errors.js';
+
+export function sourceCandidates(invoiceId: string, context: DbExecutor = db) {
+  return context
+    .select({ candidate: importRows.candidate })
+    .from(importRows)
+    .where(
+      and(eq(importRows.invoiceId, invoiceId), inArray(importRows.status, ['QUEUED', 'SAVED'])),
+    );
+}
 
 export function sources(context: DbExecutor = db) {
   return context
