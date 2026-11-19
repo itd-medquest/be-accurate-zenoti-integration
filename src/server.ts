@@ -1,5 +1,6 @@
 ﻿import { createServer, type RequestListener } from 'node:http';
 import { config } from './config/env.js';
+import { startupFailure } from './utils/startup-error.js';
 let handler: RequestListener | undefined;
 let closeDatabase: (() => Promise<void>) | undefined;
 let stopWorker: (() => Promise<void>) | undefined;
@@ -49,16 +50,10 @@ try {
   process.once('SIGTERM', stop);
   console.log(`IMP API ready: ${config.BETTER_AUTH_URL} | Mode Accurate dikelola di Settings`);
 } catch (error) {
-  const code = (error as NodeJS.ErrnoException).code;
   console.error(
     JSON.stringify({
       event: 'server.start.failed',
-      message:
-        code === 'EADDRINUSE'
-          ? `Port ${config.PORT} sudah digunakan. Gunakan port lain untuk proses backend tambahan.`
-          : error instanceof Error
-            ? error.message
-            : 'Backend gagal dimulai.',
+      ...startupFailure(error, config.PORT),
     }),
   );
   if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
