@@ -1,34 +1,34 @@
 # intgrte — Backend
 
-API dan worker untuk membaca invoice Zenoti, mengelola pemeriksaan Finance, serta mengirim Faktur Penjualan ke Accurate Online. Dibangun dengan Express, TypeScript, Better Auth, Drizzle ORM, dan MySQL 8.4 LTS.
+API and worker for reading Zenoti invoices, managing Finance review, and sending Sales Invoices to Accurate Online. Built with Express, TypeScript, Better Auth, Drizzle ORM, and MySQL 8.4 LTS.
 
-## Alur utama
+## Main Workflow
 
-1. Upload PDF/Excel menghasilkan draft dan preview; upload belum memasukkan transaksi ke antrean pengiriman.
-2. Finance memeriksa item, total, status invoice, serta mapping customer dan item Accurate.
-3. Submit memvalidasi draft dan menyiapkan pengiriman melalui worker.
-4. Hasil pengiriman dan kegagalan tercatat untuk pemeriksaan serta audit.
+1. Uploading PDF/Excel files creates drafts and previews; uploading does not queue transactions for delivery.
+2. Finance reviews items, totals, invoice status, and Accurate customer/item mappings.
+3. Submission validates the draft and prepares delivery through the worker.
+4. Delivery results and failures are recorded for review and audit.
 
-Item dengan penanda redeemed dan Consultation gratis tidak dikirim ke Accurate. Invoice full redeem disimpan secara lokal; invoice campuran hanya mengirim item yang memenuhi ketentuan pengakuan. Nomor faktur yang sudah digunakan di Accurate ditahan untuk pemeriksaan duplikat. Faktur dan Penerimaan Penjualan mempunyai pemeriksaan, konfirmasi pengiriman, serta antrean tersendiri.
+Redeemed items and complimentary Consultation services are not sent to Accurate. Fully redeemed invoices are stored locally; mixed invoices send only items eligible for recognition. Invoice numbers already used in Accurate are held for duplicate review. Sales Invoices and Sales Receipts have separate review steps, submission confirmations, and queues.
 
-### Penerimaan Penjualan
+### Sales Receipts
 
-Pembayaran dari invoice yang faktur Accurate-nya sudah terverifikasi dapat direview, disimpan sebagai draft, dan dikirim setelah konfirmasi Finance. Settings menyediakan mapping akun kas/bank dan biaya per perusahaan, bank, dan metode. Tarif BCA/BNI: CC 2%, debit 1,8%, QRIS 0,7%, transfer langsung 0%; pecahan biaya selalu dibulatkan ke atas. Antrean receipt memeriksa saldo terbaru dan memverifikasi hasil tanpa menjalankan ulang pengiriman faktur. Hasil pengiriman yang belum pasti direkonsiliasi melalui pembacaan vendor. Lihat [alur, kontrak API, dan batas UAT receipt](docs/sales-receipts.md).
+Payments from invoices with verified Accurate Sales Invoices can be reviewed, saved as drafts, and submitted after Finance confirmation. Settings provides cash/bank and expense account mappings for each company, bank, and payment method. BCA/BNI rates: credit card 2%, debit 1.8%, QRIS 0.7%, and direct bank transfer 0%; fractional fees are always rounded up. The receipt queue checks the latest balance and verifies results without repeating invoice delivery. Uncertain delivery results are reconciled through vendor reads. See the [receipt workflow, API contract, and UAT limitations](docs/sales-receipts.md).
 
-### Customer Accurate baru
+### Creating Accurate Customers
 
-Super Admin dan Finance dapat membuat customer ketika pencarian saat review invoice tidak menemukan hasil. `GET /api/accurate/imports/:batchId/rows/:rowId/customer/prepare?version=...` memindai seluruh halaman customer dengan urutan ID Accurate descending dan mengambil akhiran MPA numerik terbesar + 1. Master aktif harus cocok tepat satu: kategori `Astetic`, cabang `PT Mylab Prima Inovatif`, mata uang `IDR`, kategori harga/diskon `Umum`, dan syarat pembayaran `C.O.D`. Pemetaan kategori diskon mengikuti master kategori harga pada collection API. Cabang tersebut harus sesuai dengan tujuan invoice; jika nomor MPA belum tersedia, penomoran perlu diperiksa di Accurate terlebih dahulu.
+Super Admin and Finance can create customers when a search returns no results during invoice review. `GET /api/accurate/imports/:batchId/rows/:rowId/customer/prepare?version=...` scans all customer pages in descending Accurate ID order and uses the largest numeric MPA suffix plus one. Each required active master record must have exactly one match: category `Astetic`, branch `PT Mylab Prima Inovatif`, currency `IDR`, price/discount category `Umum`, and payment terms `C.O.D`. Discount category mapping uses the price category master in the API collection. The branch must match the invoice destination; if no MPA number exists, numbering must first be reviewed in Accurate.
 
-`POST /api/accurate/imports/:batchId/rows/:rowId/customer` menerima `requestId`, `version`, `databaseId`, `customerNo`, dan `name`. Backend memvalidasi ulang nomor, nama duplikat, master default, koneksi aktual, dan draft sebelum mengirim hanya field Umum/Penjualan ke `customer/save.do`. Permintaan dicatat secara durable di audit sebelum POST. Permintaan ulang dengan identitas yang sama hanya memeriksa hasil di Accurate; respons yang belum pasti tidak memicu POST ulang. Nomor/nama yang sedang diproses ditahan agar tidak dipakai dua permintaan bersamaan. Customer yang sudah dibuat tetapi mapping-nya gagal dapat digunakan kembali melalui tombol Gunakan customer atau pencarian biasa. Invoice tetap menunggu pemeriksaan dan submit. Tidak ada perubahan schema database untuk fitur ini.
+`POST /api/accurate/imports/:batchId/rows/:rowId/customer` accepts `requestId`, `version`, `databaseId`, `customerNo`, and `name`. The backend revalidates numbering, duplicate names, default master records, the live connection, and the draft before sending only General/Sales fields to `customer/save.do`. Requests are durably recorded in the audit log before the POST. Repeated requests with the same identity only check the result in Accurate; uncertain responses do not trigger another POST. Numbers and names being processed are reserved to prevent concurrent requests from reusing them. Customers created successfully but not mapped can be reused through the Use customer action or a regular search. The invoice still requires review and submission. This feature does not require database schema changes.
 
-## Persyaratan
+## Requirements
 
-- Node.js **22.16 atau lebih baru** dan npm.
-- MySQL 8.4 LTS (InnoDB); Docker Compose menyediakan MySQL 8.4.13 untuk lokal.
+- Node.js **22.16 or later** and npm.
+- MySQL 8.4 LTS (InnoDB); Docker Compose provides MySQL 8.4.13 for local development.
 
-Frontend terkait: [accurate-zenoti-integration](https://github.com/itd-medquest/accurate-zenoti-integration). Clone sebagai folder `frontend` dan `backend` yang berdampingan jika menjalankan pengujian integrasi frontend.
+Related frontend: [accurate-zenoti-integration](https://github.com/itd-medquest/accurate-zenoti-integration). Clone the repositories into sibling folders named `frontend` and `backend` when running frontend integration tests.
 
-## Setup lokal dengan MySQL
+## Local Setup with MySQL
 
 ```powershell
 git clone https://github.com/itd-medquest/be-accurate-zenoti-integration.git backend
@@ -37,15 +37,15 @@ npm ci
 Copy-Item .env.example .env
 ```
 
-Lengkapi `.env`, terutama secret autentikasi, kunci enkripsi, serta akun seed lokal. Samakan password pada `DATABASE_URL` dan `MYSQL_PASSWORD`; atur `MYSQL_ROOT_PASSWORD` terpisah untuk Compose.
+Complete `.env`, particularly the authentication secret, encryption key, and local seed account settings. Use the same password in `DATABASE_URL` and `MYSQL_PASSWORD`; configure a separate `MYSQL_ROOT_PASSWORD` for Compose.
 
-Untuk membuat nilai acak, jalankan perintah berikut dua kali: gunakan satu hasil untuk `BETTER_AUTH_SECRET` dan hasil yang berbeda untuk `ENCRYPTION_KEY`.
+Run the following command twice to generate random values: use one result for `BETTER_AUTH_SECRET` and a different result for `ENCRYPTION_KEY`.
 
 ```powershell
 node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 ```
 
-Jalankan database, migrasi, dan seed pengembangan:
+Start the database, apply migrations, and initialize the development environment:
 
 ```powershell
 docker compose up -d mysql
@@ -55,79 +55,79 @@ npm run db:setup:company
 npm run dev
 ```
 
-API tersedia di `http://localhost:4000`. Endpoint pemeriksaan layanan: `GET /api/health`. Seed khusus admin membuat akun awal tanpa invoice. Setup perusahaan memerlukan SETUP_COMPANY_ID/NAME dan SETUP_CENTER_ID. Untuk data demo di database pengembangan terpisah, `npm run db:seed` tetap tersedia.
+The API is available at `http://localhost:4000`. Service health endpoint: `GET /api/health`. The admin-only seed creates the initial account without invoices. Company setup requires SETUP_COMPANY_ID/NAME and SETUP_CENTER_ID. To populate a separate development database with demo data, `npm run db:seed` remains available.
 
-Jika laptop memakai instalasi MySQL portable yang sudah diinisialisasi saat migrasi, jalankan database kembali setelah restart laptop sebelum memulai backend:
+If your laptop uses the portable MySQL installation initialized during migration, restart the database after rebooting the laptop and before starting the backend:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/start-mysql-local.ps1
 npm run dev
 ```
 
-Launcher membaca descriptor privat `data/mysql-local-runtime.json` dan memakai database yang sudah ada. Instalasi portable lokal menggunakan port 3307; Compose menggunakan 3306. Error startup `ECONNREFUSED` berarti koneksi ditolak: pastikan MySQL aktif dan host/port `DATABASE_URL` sesuai. Setelah backend siap, `GET /api/health` harus mengembalikan HTTP 200 dengan `status: "ok"` serta `queue: "mysql"`.
+The launcher reads the private descriptor `data/mysql-local-runtime.json` and uses the existing database. The local portable installation uses port 3307; Compose uses 3306. A startup `ECONNREFUSED` error means the connection was refused: verify that MySQL is running and that the host/port in `DATABASE_URL` are correct. Once the backend is ready, `GET /api/health` should return HTTP 200 with `status: "ok"` and `queue: "mysql"`.
 
-### Deployment dengan database kosong
+### Deployment with an Empty Database
 
-Struktur database dibuat dari migration repository tanpa membawa data lokal. Ikuti [panduan utama setup MySQL untuk server dev](docs/mysql-migration.md): konfigurasi environment, migration, seed Super Admin pertama, setup PT. MMI, koneksi/tujuan Accurate, serta 8 mapping BCA/BNI untuk Penerimaan Penjualan. Panduan juga memuat kode akun perkiraan referensi, tarif, pembulatan, dan checklist UAT. Perilaku bootstrap akun saat dijalankan ulang dijelaskan pada [panduan deployment](docs/deployment.md).
+The database structure is created from repository migrations without copying local data. Follow the [main MySQL setup guide for the dev server](docs/mysql-migration.md): environment configuration, migrations, initial Super Admin seed, PT. MMI setup, Accurate connections/destinations, and the eight BCA/BNI Sales Receipt mappings. The guide also includes reference general ledger account codes, rates, rounding rules, and a UAT checklist. See the [deployment guide](docs/deployment.md) for account bootstrap behavior on subsequent runs.
 
-### Memindahkan akun lokal lama
+### Transferring Legacy Local Accounts
 
-Langkah ini opsional dan terpisah dari setup server baru. Gunakan export terenkripsi dan import ke MySQL kosong sebelum membuat perusahaan atau konfigurasi. Password, role, dan status akun dipertahankan; invoice, history, sesi, serta konfigurasi Accurate tidak disalin. Migration PostgreSQL lama tetap diarsipkan; hanya `src/db/migrations/mysql/` dijalankan. Ikuti [panduan backup sumber dan transfer akun PostgreSQL/PGlite](docs/postgresql-user-transfer.md).
+This optional process is separate from setting up a new server. Use an encrypted export and import it into an empty MySQL database before creating companies or configuration. Passwords, roles, and account status are preserved; invoices, history, sessions, and Accurate configuration are not copied. Legacy PostgreSQL migrations remain archived; only `src/db/migrations/mysql/` is applied. Follow the [PostgreSQL/PGlite source backup and account transfer guide](docs/postgresql-user-transfer.md).
 
-## Konfigurasi environment
+## Environment Configuration
 
-Lihat `.env.example` untuk seluruh variabel dan contoh nilainya.
+See `.env.example` for the complete list of variables and example values.
 
-| Variabel                                                     | Kegunaan                                                                                                                  |
-| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| `PORT`                                                       | Port API, default lokal `4000`                                                                                            |
-| `FRONTEND_URL`                                               | Origin frontend yang diizinkan, default `http://localhost:3000`                                                           |
-| `BETTER_AUTH_URL`                                            | Alamat publik backend untuk autentikasi                                                                                   |
-| `BETTER_AUTH_SECRET`                                         | Secret autentikasi, minimal 32 karakter                                                                                   |
-| `DATABASE_URL`                                               | Koneksi `mysql://` ke MySQL 8.4 LTS                                                                                       |
-| `DATABASE_SSL`                                               | `true` untuk TLS dengan verifikasi sertifikat; default `false` untuk lokal                                                |
-| `ENCRYPTION_KEY`                                             | Kunci enkripsi kredensial, 64 karakter heksadesimal; pertahankan untuk membaca kredensial yang sudah tersimpan            |
-| `INTEGRATION_MODE`                                           | Mode dasar `simulation` atau `live`; koneksi Accurate aktual dikelola secara eksplisit melalui Settings                   |
-| `RUN_WORKER`                                                 | `true` untuk worker dalam proses API                                                                                      |
-| `IMPORT_PACKAGE_TAX_POLICY`                                  | Kebijakan alokasi pajak paket; contoh lokal menggunakan `proportional`                                                    |
-| `SEED_ADMIN_NAME`, `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD` | Nama opsional, email, dan password bootstrap admin; `db:seed:admin` hanya membuat admin pertama, password 12–128 karakter |
-| `RESEND_API_KEY`, `RESEND_FROM`                              | Konfigurasi pengiriman email reset password                                                                               |
+| Variable                                                     | Purpose                                                                                                                           |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `PORT`                                                       | API port; local default: `4000`                                                                                                   |
+| `FRONTEND_URL`                                               | Allowed frontend origin; default: `http://localhost:3000`                                                                         |
+| `BETTER_AUTH_URL`                                            | Public backend URL for authentication                                                                                             |
+| `BETTER_AUTH_SECRET`                                         | Authentication secret, at least 32 characters                                                                                     |
+| `DATABASE_URL`                                               | `mysql://` connection to MySQL 8.4 LTS                                                                                            |
+| `DATABASE_SSL`                                               | `true` for TLS with certificate verification; local default: `false`                                                              |
+| `ENCRYPTION_KEY`                                             | Credential encryption key, 64 hexadecimal characters; retain it to read previously stored credentials                             |
+| `INTEGRATION_MODE`                                           | Base mode: `simulation` or `live`; live Accurate connections are managed explicitly through Settings                              |
+| `RUN_WORKER`                                                 | `true` to run the worker inside the API process                                                                                   |
+| `IMPORT_PACKAGE_TAX_POLICY`                                  | Package tax allocation policy; the local example uses `proportional`                                                              |
+| `SEED_ADMIN_NAME`, `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD` | Optional name, email, and password for admin bootstrap; `db:seed:admin` creates only the first admin; password: 12–128 characters |
+| `RESEND_API_KEY`, `RESEND_FROM`                              | Password-reset email delivery configuration                                                                                       |
 
-API Token dan Signature Secret Accurate diisi melalui Settings dan disimpan terenkripsi. Simulasi tidak memerlukan API Zenoti; sumber invoice pada alur upload berasal dari PDF/Excel. Parsing PDF dan fallback OCR diproses secara lokal menggunakan dependency yang terpasang.
+The Accurate API Token and Signature Secret are entered through Settings and stored encrypted. Simulation does not require the Zenoti API; the upload workflow reads invoices from PDF/Excel files. PDF parsing and OCR fallback run locally using installed dependencies.
 
-Pemulihan password menggunakan OTP melalui Resend dan memerlukan `RESEND_API_KEY` serta `RESEND_FROM` dari domain terverifikasi untuk penerima anggota tim. Tambah pengguna saat ini memakai password awal dari admin; undangan/aktivasi melalui email belum tersedia. Lihat [hasil audit email dan OTP](docs/email-readiness.md) untuk konfigurasi, hasil pengujian, dan kebutuhan reverse proxy serta pengiriman email.
+Password recovery uses OTP through Resend and requires `RESEND_API_KEY` and a `RESEND_FROM` address from a verified domain to deliver emails to team members. New users currently receive an initial password from an admin; email invitations/activation are not available yet. See the [email and OTP readiness audit](docs/email-readiness.md) for configuration, test results, and reverse proxy/email delivery requirements.
 
-File invoice sumber tersimpan secara privat di `data/imports`. Siapkan penyimpanan persisten untuk data tersebut saat deployment dan jangan memasukkannya ke Git.
+Source invoice files are stored privately in `data/imports`. Configure persistent storage for this directory during deployment and exclude it from Git.
 
-Super Admin dapat menambah dan menghapus perusahaan melalui **Settings → Perusahaan**, lalu mengatur koneksi Accurate, tujuan, dan akun penerimaan masing-masing. Perusahaan baru menggunakan kredensialnya sendiri; penghapusan membutuhkan konfirmasi nama dan ditolak jika sudah memiliki riwayat. Lihat [panduan pengelolaan perusahaan](docs/company-management.md).
+Super Admin can add and delete companies through **Settings → Companies**, then configure each company's Accurate connection, destination, and receipt accounts. Each new company uses its own credentials; deletion requires company-name confirmation and is rejected if the company has history. See the [company management guide](docs/company-management.md).
 
-## Perintah
+## Commands
 
-Jalankan dari direktori repository backend.
+Run these commands from the backend repository directory.
 
-| Perintah                   | Kegunaan                                                                       |
+| Command                    | Purpose                                                                        |
 | -------------------------- | ------------------------------------------------------------------------------ |
-| `npm run dev`              | Menjalankan API dengan pemantauan perubahan source                             |
-| `npm run typecheck`        | Memeriksa TypeScript                                                           |
-| `npm test`                 | Menjalankan pengujian backend                                                  |
-| `npm run build`            | Membuat output `dist/` dan menyalin migrasi                                    |
-| `npm start`                | Menjalankan hasil build                                                        |
-| `npm run db:migrate`       | Menerapkan migrasi database                                                    |
-| `npm run db:generate`      | Membuat migrasi dari perubahan schema                                          |
-| `npm run db:seed`          | Menyiapkan akun dan data contoh pengembangan                                   |
-| `npm run db:seed:admin`    | Membuat super admin pertama tanpa data demo; tidak mereset akun yang sudah ada |
-| `npm run db:setup:company` | Menambahkan perusahaan kosong untuk dikonfigurasi di Settings                  |
-| `npm run db:export:users`  | Export akun PostgreSQL/PGlite terenkripsi                                      |
-| `npm run db:import:users`  | Import akun ke MySQL baru tanpa menimpa pengguna                               |
-| `npm run worker`           | Worker terpisah, menggunakan MySQL                                             |
+| `npm run dev`              | Start the API with source-change monitoring                                    |
+| `npm run typecheck`        | Check TypeScript                                                               |
+| `npm test`                 | Run backend tests                                                              |
+| `npm run build`            | Build `dist/` and copy migrations                                              |
+| `npm start`                | Run the production build                                                       |
+| `npm run db:migrate`       | Apply database migrations                                                      |
+| `npm run db:generate`      | Generate migrations from schema changes                                        |
+| `npm run db:seed`          | Populate development accounts and sample data                                  |
+| `npm run db:seed:admin`    | Create the first Super Admin without demo data; do not reset existing accounts |
+| `npm run db:setup:company` | Add an empty company to configure in Settings                                  |
+| `npm run db:export:users`  | Export encrypted PostgreSQL/PGlite accounts                                    |
+| `npm run db:import:users`  | Import accounts into a new MySQL database without overwriting users            |
+| `npm run worker`           | Run a separate worker using MySQL                                              |
 
-Jika menggunakan worker terpisah, atur `RUN_WORKER=false` pada proses API. Untuk deployment, gunakan MySQL dan konfigurasi environment tujuan, jalankan migration yang sudah ditinjau, lalu bootstrap super admin pertama dengan `db:seed:admin` sesuai [panduan deployment](docs/deployment.md). Seed pengembangan `db:seed` bukan bagian dari langkah deployment.
+When running a separate worker, set `RUN_WORKER=false` on the API process. For deployment, use MySQL and the target environment configuration, apply reviewed migrations, and bootstrap the first Super Admin with `db:seed:admin` according to the [deployment guide](docs/deployment.md). The development seed, `db:seed`, is not part of deployment.
 
-## Pengujian integrasi frontend
+## Frontend Integration Tests
 
-Siapkan `TEST_DATABASE_URL` pada environment atau `.env.test.local` privat. Tes membuat schema MySQL `imp_test_*` tersendiri dan tidak memakai database aplikasi.
+Set `TEST_DATABASE_URL` in the environment or a private `.env.test.local`. Tests create separate `imp_test_*` MySQL schemas and do not use the application database.
 
-Backend menyediakan fixture di `test/helpers/browser-server.ts` dengan database sementara dan respons Accurate tiruan:
+The backend provides a fixture at `test/helpers/browser-server.ts` with a temporary database and mocked Accurate responses:
 
 ```powershell
 npx tsx scripts/prepare-import-assets.ts
@@ -135,27 +135,27 @@ $env:ACCURATE_MOCK_SERVER = 'true'
 npx tsx test/helpers/browser-server.ts
 ```
 
-Fixture memerlukan konfigurasi akun seed lokal di `.env`, berjalan di port `4001`, dan menggunakan frontend di port `3001`. Script template menulis contoh Excel anonim ke `../../docs/templates/`. Ikuti README frontend untuk menjalankan web dan Playwright dengan alamat fixture tersebut.
+The fixture requires local seed account settings in `.env`, runs on port `4001`, and expects the frontend on port `3001`. The template script writes anonymous Excel examples to `../../docs/templates/`. Follow the frontend README to start the application and Playwright against these fixture addresses.
 
-## Struktur project
+## Project Structure
 
 ```text
 src/
-  routes/         Endpoint API
-  validations/    Schema dan validasi request
-  controllers/    Penerjemahan HTTP
-  services/       Aturan bisnis dan orkestrasi transaksi
-  repositories/   Akses database
-  db/             Koneksi, schema, migrasi, dan seed
-  config/         Konfigurasi environment
-  middlewares/    Autentikasi, otorisasi, dan penanganan error
-  utils/          Parser dan perhitungan bersama
-test/             Pengujian backend dan fixture
-scripts/          Build, ekstraksi PDF, dan utilitas lokal
+  routes/         API endpoints
+  validations/    Request schemas and validation
+  controllers/    HTTP translation
+  services/       Business rules and transaction orchestration
+  repositories/   Database access
+  db/             Connections, schemas, migrations, and seeds
+  config/         Environment configuration
+  middlewares/    Authentication, authorization, and error handling
+  utils/          Shared parsers and calculations
+test/             Backend tests and fixtures
+scripts/          Builds, PDF extraction, and local utilities
 ```
 
-Alur request: **route → validasi → controller → service → repository → database**. Pertahankan audit, versioning, idempotency, dan validasi total ketika mengubah alur invoice.
+Request flow: **route → validation → controller → service → repository → database**. Preserve audit records, versioning, idempotency, and total validation when changing invoice workflows.
 
 ## Git Rules
 
-Buat branch untuk setiap perubahan, sertakan migrasi bila diperlukan, jalankan `npm run typecheck`, `npm test`, dan `npm run build`, lalu ajukan pull request. Pertahankan `package-lock.json` dan riwayat migrasi. Environment lokal, kredensial, database, dokumen sumber, dan hasil build/testing tidak disertakan dalam commit.
+Create a branch for each change, include migrations when needed, run `npm run typecheck`, `npm test`, and `npm run build`, then open a pull request. Keep `package-lock.json` and migration history. Exclude local environments, credentials, databases, source documents, and build/test artifacts from commits.
