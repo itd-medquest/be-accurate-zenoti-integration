@@ -179,19 +179,23 @@ export async function receiptOverview(filters: z.infer<typeof receiptFilters>) {
   };
 }
 
-export async function receiptConfiguration() {
-  const { profile } = await connectedAccurate();
-  return storedConfiguration(profile.id, profile.name);
+export async function receiptConfiguration(branchId?: string) {
+  const { profile } = await connectedAccurate(false, branchId);
+  return storedConfiguration(profile.id, profile.name, branchId);
 }
-async function storedConfiguration(databaseId: string, databaseName: string) {
+async function storedConfiguration(databaseId: string, databaseName: string, branchId?: string) {
   const [mappings, destinations] = await Promise.all([
     receipts.mappings(),
     accurate.destinations(),
   ]);
   return {
     database: { id: databaseId, name: databaseName },
-    mappings: mappings.filter((row) => row.databaseId === databaseId),
-    destinations: destinations.filter((row) => row.databaseId === databaseId),
+    mappings: mappings.filter(
+      (row) => row.databaseId === databaseId && (!branchId || row.branchId === branchId),
+    ),
+    destinations: destinations.filter(
+      (row) => row.databaseId === databaseId && (!branchId || row.branchId === branchId),
+    ),
     banks: receiptBanks,
     methods: receiptMethods,
     rates: receiptRates,
@@ -200,11 +204,12 @@ async function storedConfiguration(databaseId: string, databaseName: string) {
 }
 
 export async function searchAccounts(input: {
+  branchId?: string;
   kind: 'bank' | 'fee';
   search: string;
   page: number;
 }) {
-  const { client, profile } = await connectedAccurate();
+  const { client, profile } = await connectedAccurate(false, input.branchId);
   return {
     database: { id: profile.id, name: profile.name },
     items: await client.receiptAccounts(profile, input.kind, input.search, input.page),
@@ -215,7 +220,7 @@ export async function saveReceiptMapping(
   input: z.infer<typeof receiptMappingInput>,
   actorId: string,
 ) {
-  const { client, profile } = await connectedAccurate();
+  const { client, profile } = await connectedAccurate(false, input.branchId);
   const account = await client.receiptAccount(profile, 'bank', input.accountId);
   const needsFee = input.method !== 'BANK_TRANSFER';
   if (!needsFee && input.feeAccountId)
@@ -362,15 +367,15 @@ export async function receiptDetail(id: string) {
   }
   let config: Awaited<ReturnType<typeof storedConfiguration>>;
   try {
-    config = await receiptConfiguration();
+    config = await receiptConfiguration(draft.branchId);
     if (config.database.id !== draft.databaseId) {
       issues.push('Koneksi Accurate berbeda dari database penerimaan ini.');
-      config = await storedConfiguration(draft.databaseId, draft.databaseId);
+      config = await storedConfiguration(draft.databaseId, draft.databaseId, draft.branchId);
     }
   } catch (cause) {
     if (!(cause instanceof HttpError)) throw cause;
     issues.push(cause.message);
-    config = await storedConfiguration(draft.databaseId, draft.databaseId);
+    config = await storedConfiguration(draft.databaseId, draft.databaseId, draft.branchId);
   }
   let balance: Awaited<ReturnType<typeof receiptBalance>> | null = null;
   let balanceIssue = '';
@@ -432,7 +437,7 @@ export async function saveReceiptDraft(
   singleReceiptGroups(source);
   const number = source.targetNumber;
   if (!number) throw new HttpError(422, 'Nomor faktur Accurate belum tersedia.');
-  const { client, profile } = await connectedAccurate(true);
+  const { client, profile } = await connectedAccurate(true, existing.branchId);
   const chosen = await receipts.mapping(input.mappingId);
   if (
     !chosen ||
@@ -558,8 +563,8 @@ function financialFields(value: unknown): unknown {
   return value;
 }
 
-export async function receiptReference(number: string) {
-  const { client, profile } = await connectedAccurate();
+export async function receiptReference(number: string, branchId?: string) {
+  const { client, profile } = await connectedAccurate(false, branchId);
   const row = await client.receiptReference(profile, number);
   return {
     database: { id: profile.id, name: profile.name },

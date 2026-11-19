@@ -2,6 +2,7 @@ import type { RequestHandler } from 'express';
 import { validated } from '../middlewares/validate.js';
 import * as receipts from '../services/receipts.service.js';
 import * as delivery from '../services/receipt-delivery.service.js';
+import { companyScopeQuery } from '../validations/companies.validation.js';
 import {
   receiptReferenceQuery,
   receiptFilters,
@@ -15,14 +16,16 @@ import {
 } from '../validations/receipts.validation.js';
 
 export const reference: RequestHandler = async (_req, res) => {
-  const { number } = validated(res, receiptReferenceQuery, 'query');
-  res.json(await receipts.receiptReference(number));
+  const { number, branchId } = validated(res, receiptReferenceQuery, 'query');
+  res.json(await receipts.receiptReference(number, branchId));
 };
 export const overview: RequestHandler = async (_req, res) => {
   res.json(await receipts.receiptOverview(validated(res, receiptFilters, 'query')));
 };
 export const configuration: RequestHandler = async (_req, res) => {
-  res.json(await receipts.receiptConfiguration());
+  res.json(
+    await receipts.receiptConfiguration(validated(res, companyScopeQuery, 'query').branchId),
+  );
 };
 export const accounts: RequestHandler = async (_req, res) => {
   res.json(await receipts.searchAccounts(validated(res, receiptAccountQuery, 'query')));

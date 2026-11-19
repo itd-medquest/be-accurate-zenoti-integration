@@ -12,26 +12,28 @@ import { accurateConnection, connectedAccurate } from './accurate-connection.ser
 import { mappingSourceKey } from '../utils/accurate-mapping.js';
 import { isFreeConsultation } from '../utils/redemption.js';
 
-export async function accurateStatus() {
-  const connection = await accurateConnection();
+export async function accurateStatus(branchId?: string) {
+  const connection = await accurateConnection(undefined, branchId);
   return {
     mode: connection.mode,
     enabled: connection.enabled,
     configured: !!connection.credentials?.apiToken && !!connection.credentials.signatureSecret,
     taxPolicy: 'gross-no-tax',
-    destinations: await repository.destinations(),
+    destinations: (await repository.destinations()).filter(
+      (row) => !branchId || row.branchId === branchId,
+    ),
   };
 }
 export const deliveredInvoices = () => repository.listDelivered();
 export async function searchMasters(input: z.output<typeof masterQuery>) {
-  const { client, profile } = await connectedAccurate();
+  const { client, profile } = await connectedAccurate(false, input.branchId);
   return {
     database: { id: profile.id, name: profile.name },
     items: await client.masters(profile, input.kind, input.search, input.page),
   };
 }
 export async function saveDestination(branchId: string, masterId: string, actorId: string) {
-  const { client, profile } = await connectedAccurate();
+  const { client, profile } = await connectedAccurate(false, branchId);
   const master = await client.masterDetail(profile, 'branch', masterId);
   if (master.id !== masterId) throw new HttpError(422, 'ID cabang respons Accurate tidak sesuai.');
   await withTransaction(async (tx) => {
@@ -68,7 +70,7 @@ export async function saveDestination(branchId: string, masterId: string, actorI
       tx,
     );
   });
-  return accurateStatus();
+  return accurateStatus(branchId);
 }
 export async function saveRowMapping(
   batchId: string,
@@ -85,7 +87,7 @@ export async function saveRowMapping(
     throw new HttpError(409, 'Preview berubah atau sudah disubmit. Muat ulang.');
   const destination = await repository.destination(batchSnapshot.branchId);
   if (!destination) throw new HttpError(422, 'Atur tujuan cabang Accurate terlebih dahulu.');
-  const { client, profile } = await connectedAccurate();
+  const { client, profile } = await connectedAccurate(false, batchSnapshot.branchId);
   if (profile.id !== destination.databaseId)
     throw new HttpError(422, 'Database token berbeda dari tujuan cabang.');
   const master = await client.masterDetail(profile, input.kind, input.masterId);

@@ -1,6 +1,17 @@
-import { eq, sql } from 'drizzle-orm';
+import { asc, eq, getTableColumns, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { branches } from '../db/schema/index.js';
+import {
+  branches,
+  invoices,
+  importBatches,
+  accurateDeliveries,
+  accurateReceipts,
+  accurateDestinations,
+  accurateMappings,
+  receiptAccountMappings,
+  integrationConfigs,
+} from '../db/schema/index.js';
+import { companyConnectionId } from '../utils/company-connection.js';
 import type { DbExecutor } from './unit-of-work.repository.js';
 
 export function findById(id: string, context: DbExecutor = db) {
@@ -31,4 +42,35 @@ export function seedMissing(data: typeof branches.$inferInsert, context: DbExecu
 
 export function create(data: typeof branches.$inferInsert, context: DbExecutor) {
   return context.insert(branches).values(data);
+}
+
+export function findByName(name: string, context: DbExecutor) {
+  return context
+    .select({ id: branches.id })
+    .from(branches)
+    .where(sql`lower(trim(${branches.name})) = ${name.toLowerCase()}`)
+    .limit(1);
+}
+
+export function listManaged(context: DbExecutor = db) {
+  const references = [invoices, importBatches, accurateDeliveries, accurateReceipts].map(
+    (table) => sql`exists (select 1 from ${table} where ${table.branchId} = ${branches.id})`,
+  );
+  return context
+    .select({
+      ...getTableColumns(branches),
+      hasHistory: sql<number>`(${sql.join(references, sql` or `)})`,
+    })
+    .from(branches)
+    .orderBy(asc(branches.name), asc(branches.id));
+}
+
+export async function removeCompany(id: string, context: DbExecutor) {
+  await context.delete(accurateMappings).where(eq(accurateMappings.branchId, id));
+  await context.delete(receiptAccountMappings).where(eq(receiptAccountMappings.branchId, id));
+  await context.delete(accurateDestinations).where(eq(accurateDestinations.branchId, id));
+  await context
+    .delete(integrationConfigs)
+    .where(eq(integrationConfigs.id, companyConnectionId(id)));
+  await context.delete(branches).where(eq(branches.id, id));
 }

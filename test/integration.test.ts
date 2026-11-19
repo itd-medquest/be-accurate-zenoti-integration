@@ -2,6 +2,7 @@ import { after as afterDatabase } from 'node:test';
 import { createTestDatabase, closeTestDatabases } from './helpers/mysql-database.js';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { z } from 'zod';
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { Server } from 'node:http';
 import { writeFile, unlink, mkdtemp } from 'node:fs/promises';
@@ -44,6 +45,40 @@ let server: Server;
 let base = '';
 const cookies: Record<string, string> = {};
 const password = 'Test-password-8675309!';
+
+test('company management requires an admin and enforces typed confirmation on delete', async () => {
+  assert.equal((await request('/companies')).status, 401);
+  assert.equal((await request('/companies', 'finance')).status, 403);
+  assert.equal((await request('/companies', 'viewer')).status, 403);
+  assert.equal((await request('/companies', 'finance', 'POST', { name: 'Denied' })).status, 403);
+  assert.equal((await request('/companies', 'super_admin', 'POST', { name: ' ' })).status, 400);
+  assert.equal((await request('/companies', 'super_admin', 'POST', { name: 'Extra', active: false })).status, 400);
+  const created = await request('/companies', 'super_admin', 'POST', { name: 'HTTP Company' });
+  assert.equal(created.status, 201);
+  const company = await created.json();
+  assert.equal((await request(`/companies/${company.id}`, 'finance', 'DELETE', { confirmationName: company.name })).status, 403);
+  assert.equal((await request(`/companies/${company.id}`, 'super_admin', 'DELETE', { confirmationName: 'wrong' })).status, 400);
+  const settings = await (await request(`/settings?branchId=${company.id}`, 'super_admin')).json();
+  assert.equal(settings.accurate.hasApiToken, false);
+  assert.equal((await request(`/companies/${company.id}`, 'super_admin', 'DELETE', { confirmationName: company.name })).status, 200);
+});
+
+test('audit overview requires an admin session and validates pagination without changing the legacy endpoint', async () => {
+  assert.equal((await request('/audit/overview')).status, 401);
+  assert.equal((await request('/audit/overview', 'viewer')).status, 403);
+  assert.equal((await request('/audit/overview', 'finance')).status, 403);
+  for (const query of ['page=0', 'pageSize=101', 'page=bad']) {
+    assert.equal((await request(`/audit/overview?${query}`, 'super_admin')).status, 400);
+  }
+  const response = await request('/audit/overview?page=1&pageSize=10', 'super_admin');
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.ok(Array.isArray(body.items));
+  assert.equal(body.pageSize, 10);
+  assert.equal(body.page, 1);
+  assert.ok(body.total >= body.items.length);
+  assert.ok(Array.isArray(await (await request('/audit', 'super_admin')).json()));
+});
 
 test('import overview respects authorization and validates read filters', async () => {
   assert.equal((await request('/imports/overview')).status, 401);
@@ -1191,7 +1226,16 @@ test('draft item corrections preserve source, audit changes, and reject unsafe e
     .select()
     .from(auditLogs)
     .where(eq(auditLogs.action, 'import.item.correct'));
-  const details = events.find((e) => e.entityId === batch.id)!.details as any;
+  const correction = z.object({
+    reason: z.string(),
+    before: z.object({ unitPrice: z.number() }),
+    after: z.object({ unitPrice: z.number() }),
+    previousReviewedAt: z.string().nullish(),
+  });
+  const details = events.filter((event) => event.entityId === batch.id)
+    .map((event) => correction.parse(event.details))
+    .find((event) => event.previousReviewedAt === stamp);
+  assert.ok(details);
   assert.equal(details.reason, fields.reason);
   assert.equal(details.before.unitPrice, 450450);
   assert.equal(details.after.unitPrice, 500450);

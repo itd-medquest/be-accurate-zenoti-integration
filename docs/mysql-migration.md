@@ -102,7 +102,7 @@ Periksa `GET /api/health`: hasil yang diharapkan HTTP 200 dengan `status: "ok"` 
 
 Langkah berikut dilakukan **Super Admin melalui UI**, setelah backend dan frontend aktif. Tidak ada seed otomatis untuk koneksi, tujuan Accurate, atau mapping bank.
 
-1. Buka **Settings → Koneksi integrasi → Accurate Online**.
+1. Buka **Settings → Koneksi integrasi → Accurate Online** dan pilih **Perusahaan yang diatur: PT. MMI**. Untuk perusahaan tambahan, gunakan **Settings → Perusahaan → Tambah perusahaan** sesuai [panduan pengelolaan perusahaan](company-management.md).
 2. Aktifkan **Aktifkan koneksi Accurate**, isi **API Token** dan **Signature Secret** untuk tujuan pengujian yang disetujui tim, lalu **Simpan koneksi**.
 3. Gunakan **Uji koneksi tersimpan** dan pastikan database yang terbaca **PT MMI**. Pengujian hanya membaca data. Mode dapat tetap **Simulasi lokal** selama persiapan mapping.
 4. Buka **Settings → Tujuan perusahaan**. Pada **Tujuan Faktur Penjualan aktual**, cari dan pilih **PT Mylab Prima Inovatif** untuk **PT. MMI → Tujuan Accurate**, lalu gunakan pilihan tersebut. Pastikan tampil sebagai **Tersimpan**.
