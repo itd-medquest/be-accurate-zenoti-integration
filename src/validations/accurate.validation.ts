@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { createInsertSchema } from 'drizzle-zod';
 import { accurateDestinations } from '../db/schema/accurate.schema.js';
 export const masterQuery = z.object({
+  branchId: z.string().min(1).max(100).optional(),
   kind: z.enum(['customer', 'item', 'branch']),
   search: z.string().trim().max(100).default(''),
   page: z.coerce.number().int().min(1).max(1000).default(1),

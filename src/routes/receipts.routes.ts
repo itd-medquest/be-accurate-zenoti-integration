@@ -2,6 +2,7 @@ import { Router } from 'express';
 import * as receipts from '../controllers/receipts.controller.js';
 import { admin, operate } from '../middlewares/authorize.js';
 import { validate } from '../middlewares/validate.js';
+import { companyScopeQuery } from '../validations/companies.validation.js';
 import {
   receiptReferenceQuery,
   receiptFilters,
@@ -23,7 +24,12 @@ receiptsRouter.get(
   receipts.reference,
 );
 receiptsRouter.get('/', operate, validate({ query: receiptFilters }), receipts.overview);
-receiptsRouter.get('/configuration', operate, receipts.configuration);
+receiptsRouter.get(
+  '/configuration',
+  operate,
+  validate({ query: companyScopeQuery }),
+  receipts.configuration,
+);
 receiptsRouter.get(
   '/accounts',
   operate,

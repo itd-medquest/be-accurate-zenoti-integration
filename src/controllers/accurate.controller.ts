@@ -2,6 +2,7 @@ import type { RequestHandler } from 'express';
 import { validated } from '../middlewares/validate.js';
 import * as service from '../services/accurate-mapping.service.js';
 import * as customers from '../services/accurate-customer.service.js';
+import { companyScopeQuery } from '../validations/companies.validation.js';
 import {
   destinationInput,
   destinationParams,
@@ -12,7 +13,7 @@ import {
   customerCreateInput,
 } from '../validations/accurate.validation.js';
 export const status: RequestHandler = async (_req, res) => {
-  res.json(await service.accurateStatus());
+  res.json(await service.accurateStatus(validated(res, companyScopeQuery, 'query').branchId));
 };
 export const masters: RequestHandler = async (_req, res) => {
   res.json(await service.searchMasters(validated(res, masterQuery, 'query')));

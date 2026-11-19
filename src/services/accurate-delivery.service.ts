@@ -13,7 +13,7 @@ export async function deliverInvoice(
       422,
       'Versi invoice berubah dari payload pengiriman. Periksa sebelum melanjutkan.',
     );
-  const { client, profile } = await connectedAccurate(true);
+  const { client, profile } = await connectedAccurate(true, invoice.branchId);
   if (profile.id !== delivery.databaseId)
     throw new HttpError(
       422,

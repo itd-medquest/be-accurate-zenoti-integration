@@ -2,6 +2,7 @@ import { Router } from 'express';
 import * as controller from '../controllers/accurate.controller.js';
 import { admin, operate } from '../middlewares/authorize.js';
 import { validate } from '../middlewares/validate.js';
+import { companyScopeQuery } from '../validations/companies.validation.js';
 import {
   destinationInput,
   destinationParams,
@@ -12,7 +13,7 @@ import {
   customerCreateInput,
 } from '../validations/accurate.validation.js';
 export const accurateRouter = Router();
-accurateRouter.get('/status', controller.status);
+accurateRouter.get('/status', validate({ query: companyScopeQuery }), controller.status);
 accurateRouter.get('/masters', operate, validate({ query: masterQuery }), controller.masters);
 accurateRouter.get('/delivered-invoices', operate, controller.delivered);
 accurateRouter.get(

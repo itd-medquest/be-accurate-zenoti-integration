@@ -99,6 +99,8 @@ Pemulihan password menggunakan OTP melalui Resend dan memerlukan `RESEND_API_KEY
 
 File invoice sumber tersimpan secara privat di `data/imports`. Siapkan penyimpanan persisten untuk data tersebut saat deployment dan jangan memasukkannya ke Git.
 
+Super Admin dapat menambah dan menghapus perusahaan melalui **Settings → Perusahaan**, lalu mengatur koneksi Accurate, tujuan, dan akun penerimaan masing-masing. Perusahaan baru menggunakan kredensialnya sendiri; penghapusan membutuhkan konfirmasi nama dan ditolak jika sudah memiliki riwayat. Lihat [panduan pengelolaan perusahaan](docs/company-management.md).
+
 ## Perintah
 
 Jalankan dari direktori repository backend.

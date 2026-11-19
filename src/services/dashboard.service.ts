@@ -1,9 +1,11 @@
 import { listScoped } from '../repositories/invoices.repository.js';
 import type { InvoiceFilters } from '../validations/invoices.validation.js';
 import { accurateConnection } from './accurate-connection.service.js';
+import { findById } from '../repositories/branches.repository.js';
 
 export async function getDashboard(filters: InvoiceFilters) {
   const scope = await listScoped(filters);
+  const branch = filters.branch ? await findById(filters.branch) : undefined;
   const summary = {
     total: scope.length,
     synced: scope.filter((i) => i.syncStatus === 'SYNCED').length,
@@ -26,7 +28,7 @@ export async function getDashboard(filters: InvoiceFilters) {
   const errors = new Map<string, number>();
   for (const row of scope) if (row.error) errors.set(row.error, (errors.get(row.error) ?? 0) + 1);
   return {
-    integrationMode: (await accurateConnection()).mode,
+    integrationMode: (await accurateConnection(undefined, branch?.id)).mode,
     summary,
     rate: scope.some((invoice) => !invoice.syncStatus.startsWith('LOCAL_ONLY'))
       ? Math.round(

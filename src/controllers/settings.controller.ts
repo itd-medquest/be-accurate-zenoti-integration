@@ -2,6 +2,7 @@ import type { RequestHandler } from 'express';
 import { validated } from '../middlewares/validate.js';
 import * as branches from '../services/branches.service.js';
 import * as settings from '../services/settings.service.js';
+import { companyScopeQuery } from '../validations/companies.validation.js';
 import {
   branchMappingSchema,
   connectionSchema,
@@ -9,7 +10,7 @@ import {
 } from '../validations/settings.validation.js';
 
 export const list: RequestHandler = async (_req, res) => {
-  res.json(await settings.getSettings());
+  res.json(await settings.getSettings(validated(res, companyScopeQuery, 'query').branchId));
 };
 export const configure: RequestHandler = async (req, res) => {
   res.json(
@@ -17,6 +18,7 @@ export const configure: RequestHandler = async (req, res) => {
       validated(res, providerParamsSchema, 'params').provider,
       validated(res, connectionSchema),
       req.actor.id,
+      validated(res, companyScopeQuery, 'query').branchId,
     ),
   );
 };
@@ -25,6 +27,7 @@ export const test: RequestHandler = async (req, res) => {
     await settings.testConnection(
       validated(res, providerParamsSchema, 'params').provider,
       req.actor.id,
+      validated(res, companyScopeQuery, 'query').branchId,
     ),
   );
 };

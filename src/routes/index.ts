@@ -13,10 +13,25 @@ import { settingsRouter } from './settings.routes.js';
 import { usersRouter } from './users.routes.js';
 import { accurateRouter } from './accurate.routes.js';
 import { receiptsRouter } from './receipts.routes.js';
+import { auditPageQuerySchema } from '../validations/audit.validation.js';
+import * as companies from '../controllers/companies.controller.js';
+import {
+  companyCreateSchema,
+  companyDeleteSchema,
+  companyParamsSchema,
+} from '../validations/companies.validation.js';
 
 export const apiRouter = Router();
 apiRouter.get('/me', system.me);
 apiRouter.get('/branches', settings.listBranches);
+apiRouter.get('/companies', admin, companies.list);
+apiRouter.post('/companies', admin, validate({ body: companyCreateSchema }), companies.create);
+apiRouter.delete(
+  '/companies/:id',
+  admin,
+  validate({ params: companyParamsSchema, body: companyDeleteSchema }),
+  companies.remove,
+);
 apiRouter.patch(
   '/branches/:id',
   admin,
@@ -26,6 +41,12 @@ apiRouter.patch(
 apiRouter.get('/dashboard', validate({ query: invoiceFiltersSchema }), dashboard.overview);
 apiRouter.post('/integrations/fetch', operate, system.fetch);
 apiRouter.get('/audit', admin, system.audit);
+apiRouter.get(
+  '/audit/overview',
+  admin,
+  validate({ query: auditPageQuerySchema }),
+  system.auditOverview,
+);
 apiRouter.get('/jobs', operate, system.jobs);
 apiRouter.use('/invoices', invoicesRouter);
 apiRouter.use('/imports', operate, importsRouter);

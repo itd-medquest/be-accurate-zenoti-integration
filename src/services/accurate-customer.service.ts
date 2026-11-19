@@ -7,7 +7,7 @@ import * as accurate from '../repositories/accurate.repository.js';
 import * as branches from '../repositories/branches.repository.js';
 import * as connections from '../repositories/integration-configs.repository.js';
 import { withTransaction, type DbExecutor } from '../repositories/unit-of-work.repository.js';
-import { connectedAccurate } from './accurate-connection.service.js';
+import { accurateConnection, connectedAccurate } from './accurate-connection.service.js';
 import { AccurateWriteUncertain } from './integrations/accurate-client.js';
 import type {
   AccurateCustomerDefaults,
@@ -128,8 +128,8 @@ async function setup(
 }
 
 export async function prepareCustomer(batchId: string, rowId: string, version: number) {
-  const { destination } = await invoiceContext(batchId, rowId, version);
-  const connection = await connectedAccurate(true);
+  const { batch, destination } = await invoiceContext(batchId, rowId, version);
+  const connection = await connectedAccurate(true, batch.branchId);
   if (connection.profile.id !== destination.databaseId)
     throw new HttpError(422, 'Database token berbeda dari tujuan invoice.');
   return {
@@ -222,8 +222,11 @@ export async function createCustomer(
   input: CreateInput,
   actorId: string,
 ) {
-  const connectionSnapshot = await connections.findById('accurate');
-  const connection = await connectedAccurate(true);
+  const batchSnapshot = await batches.findById(batchId);
+  if (!batchSnapshot) throw new HttpError(404, 'Batch tidak ditemukan.');
+  const currentConnection = await accurateConnection(undefined, batchSnapshot.branchId);
+  const connectionSnapshot = await connections.findById(currentConnection.id);
+  const connection = await connectedAccurate(true, batchSnapshot.branchId);
   const previous = await audits.findById(input.requestId);
   if (previous) return recover(previous, batchId, rowId, input, actorId, connection);
   const { batch, destination } = await invoiceContext(batchId, rowId, input.version);
@@ -254,14 +257,16 @@ export async function createCustomer(
     );
 
   const claimed = await withTransaction(async (tx) => {
-    const [lockedConnection] = await connections.lockById('accurate', tx);
+    await batches.lockById(batchId, tx);
+    await branches.lockById(batch.branchId, tx);
+    if ((await accurateConnection(tx, batch.branchId)).id !== currentConnection.id)
+      throw new HttpError(409, 'Koneksi Accurate berubah. Muat ulang form.');
+    const [lockedConnection] = await connections.lockById(currentConnection.id, tx);
     if (
       !lockedConnection?.enabled ||
       lockedConnection.encryptedSecret !== connectionSnapshot?.encryptedSecret
     )
       throw new HttpError(409, 'Koneksi Accurate berubah. Muat ulang form.');
-    await batches.lockById(batchId, tx);
-    await branches.lockById(batch.branchId, tx);
     const current = await invoiceContext(batchId, rowId, input.version, tx);
     if (
       current.destination.databaseId !== destination.databaseId ||
@@ -269,13 +274,17 @@ export async function createCustomer(
     )
       throw new HttpError(409, 'Tujuan invoice berubah. Muat ulang form.');
     if (await audits.findById(input.requestId, tx)) return false;
+    await audits.lockCustomerSequence(input.databaseId, tx);
     const key = `${input.databaseId}:${input.customerNo}`;
     const reservations = [
       ...(await audits.findByActionAndEntity(REQUESTED, key, tx)),
       ...(await audits.customerRequestsForName(input.databaseId, input.name, tx)),
     ];
     for (const request of reservations)
-      if (!(await isTerminal(request.id, tx)))
+      if (
+        (await audits.findByActionAndEntity(CREATED, request.id, tx)).length ||
+        !(await isTerminal(request.id, tx))
+      )
         throw new HttpError(
           409,
           'Nomor customer ini sedang diproses atau hasilnya belum pasti. Periksa Accurate terlebih dahulu.',

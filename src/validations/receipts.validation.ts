@@ -6,6 +6,7 @@ import { receiptBanks, receiptMethods } from '../types/receipt.types.js';
 export const receiptReferenceQuery = z
   .object({
     number: z.string().trim().min(1).max(100),
+    branchId: z.string().min(1).max(100).optional(),
   })
   .strict();
 
@@ -31,6 +32,7 @@ export const receiptFilters = z
     'Rentang tanggal tidak valid.',
   );
 export const receiptAccountQuery = z.object({
+  branchId: z.string().min(1).max(100).optional(),
   kind: z.enum(['bank', 'fee']),
   search: z.string().trim().max(100).default(''),
   page: z.coerce.number().int().min(1).max(1000).default(1),

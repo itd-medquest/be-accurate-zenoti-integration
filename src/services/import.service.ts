@@ -300,7 +300,7 @@ export async function getImport(id: string) {
   const activeFiles = new Set(rows.map((row) => row.fileId));
   const files = storedFiles.filter((file) => activeFiles.has(file.id));
   const preview = [];
-  const connection = await accurateConnection();
+  const connection = await accurateConnection(undefined, batch.branchId);
   const destination =
     connection.mode === 'live' ? await accurateRepository.destination(batch.branchId) : undefined;
   for (const row of rows) {
@@ -411,7 +411,7 @@ export async function submitImport(
       throw new HttpError(409, 'Preview berubah. Muat ulang dan periksa kembali sebelum submit.');
     const [branch] = await branchesRepository.lockById(batch.branchId, tx);
     if (!branch?.active) throw new HttpError(409, 'Cabang tidak aktif.');
-    const connection = await accurateConnection(tx);
+    const connection = await accurateConnection(tx, batch.branchId);
     const destination =
       connection.mode === 'live'
         ? await accurateRepository.destination(batch.branchId, tx)

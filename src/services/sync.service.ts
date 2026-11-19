@@ -14,6 +14,7 @@ import { audit } from './audit.service.js';
 import { accurate, AmbiguousWrite, zenoti } from './integrations/simulated.adapters.js';
 import * as accurateRepository from '../repositories/accurate.repository.js';
 import { deliverInvoice } from './accurate-delivery.service.js';
+import { accurateConnection } from './accurate-connection.service.js';
 import { chargeableItems, isFullRedemption, isLocalOnlyInvoice } from '../utils/redemption.js';
 export async function enqueue(invoiceId: string, actorId: string) {
   return withTransaction((tx) => enqueueWithTransaction(tx, invoiceId, actorId));
@@ -36,7 +37,7 @@ export async function enqueueWithTransaction(
     throw new HttpError(409, 'Versi invoice ini sudah tersinkron.');
   const branch = await branchesRepository.findById(invoice.branchId, tx);
   if (!branch?.active) throw new HttpError(409, 'Cabang belum aktif atau mapping belum tersedia.');
-  const connection = await integrationConfigsRepository.findById('accurate', tx);
+  const connection = await accurateConnection(tx, invoice.branchId);
   if (!connection?.enabled) throw new HttpError(409, 'Koneksi Accurate sedang dinonaktifkan.');
   const id = randomUUID();
   await jobsRepository.create({ id, invoiceId, actorId }, tx);
@@ -96,7 +97,7 @@ export async function processOne() {
     validateInvoice(invoice, !delivery);
     const branch = await branchesRepository.findById(invoice.branchId);
     if (!branch?.active) throw new HttpError(422, 'Cabang tidak aktif.');
-    const connection = await integrationConfigsRepository.findById('accurate');
+    const connection = await accurateConnection(undefined, invoice.branchId);
     if (!connection?.enabled) throw new HttpError(400, 'Koneksi Accurate dinonaktifkan.');
     // Jobs without a persisted live payload remain simulations even after the mode changes.
     if (delivery) {

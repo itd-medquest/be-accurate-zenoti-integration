@@ -50,7 +50,7 @@ function verifyInvoice(source: Source, target: ReceiptInvoice) {
 
 export async function receiptBalance(row: Receipt) {
   const { source } = await draftSource(row);
-  const { client, profile } = await connectedAccurate(true);
+  const { client, profile } = await connectedAccurate(true, row.branchId);
   if (profile.id !== row.databaseId || !source.targetId)
     throw new HttpError(409, 'Database koneksi berbeda dari tujuan faktur.');
   const invoice = await client.receiptInvoice(profile, source.targetId);
@@ -66,7 +66,10 @@ async function preflight(row: Receipt) {
       409,
       'No. Bukti harus sama dengan nomor faktur. Simpan ulang draft sebelum mengirim.',
     );
-  const { client, profile } = await connectedAccurate(true);
+  const { client, profile, connectionId, fingerprint } = await connectedAccurate(
+    true,
+    row.branchId,
+  );
   if (profile.id !== row.databaseId || !source.targetId)
     throw new HttpError(409, 'Database koneksi berbeda dari tujuan faktur.');
   const bank = receiptBanks.find((value) => value === row.bank),
@@ -168,7 +171,7 @@ async function preflight(row: Receipt) {
     outstandingBefore: invoice.outstanding,
     writeRejected: false,
   };
-  return { client, profile, payload, verification };
+  return { client, profile, payload, verification, connectionId, fingerprint };
 }
 
 async function lockOperation(row: Receipt, actorId: string, tx: DbExecutor) {
@@ -180,9 +183,19 @@ async function lockOperation(row: Receipt, actorId: string, tx: DbExecutor) {
   if (!current) throw new HttpError(404, 'Penerimaan tidak ditemukan.');
   return current;
 }
-async function recheck(row: Receipt, tx: DbExecutor) {
-  await connections.lockById('accurate', tx);
-  const connection = await accurateConnection(tx);
+async function recheck(
+  row: Receipt,
+  tx: DbExecutor,
+  prepared: { connectionId: string; fingerprint: string },
+) {
+  const snapshot = await accurateConnection(tx, row.branchId);
+  await connections.lockById(snapshot.id, tx);
+  const connection = await accurateConnection(tx, row.branchId);
+  if (connection.id !== prepared.connectionId || connection.fingerprint !== prepared.fingerprint)
+    throw new HttpError(
+      409,
+      'Koneksi Accurate berubah setelah pemeriksaan. Periksa ulang penerimaan.',
+    );
   if (!connection.enabled || connection.mode !== 'live')
     throw new HttpError(409, 'Koneksi aktual Accurate dinonaktifkan.');
   await draftSource(row, tx);
@@ -219,7 +232,7 @@ export async function submitReceipt(id: string, version: number, actorId: string
     if (['QUEUED', 'SENDING', 'SUCCEEDED'].includes(current.status)) return publicDraft(current);
     if (current.status !== 'DRAFT' || current.version !== version || current.attemptedAt)
       throw new HttpError(409, 'Draft berubah. Muat ulang sebelum mengirim.');
-    await recheck(current, tx);
+    await recheck(current, tx, prepared);
     const [saved] = await receipts.update(
       id,
       {
@@ -338,7 +351,7 @@ export async function processOneReceipt() {
       const current = await lockOperation(row, actorId, tx);
       if (current.status !== 'SENDING' || current.attemptedAt || current.version !== row.version)
         throw new HttpError(409, 'Pengiriman sudah dimulai atau dihentikan.');
-      await recheck(current, tx);
+      await recheck(current, tx, prepared);
       const [saved] = await receipts.update(
         row.id,
         { attemptedAt: new Date(), verification: prepared.verification },
@@ -395,7 +408,7 @@ export async function checkReceipt(id: string, actorId: string) {
   if (row.status === 'SUCCEEDED') return publicDraft(row);
   if (row.status !== 'NEEDS_REVIEW' || !row.attemptedAt || !row.payload || !row.verification)
     throw new HttpError(409, 'Tidak ada hasil pengiriman yang perlu direkonsiliasi.');
-  const { client, profile } = await connectedAccurate(true);
+  const { client, profile } = await connectedAccurate(true, row.branchId);
   if (profile.id !== row.databaseId)
     throw new HttpError(409, 'Database koneksi berbeda dari penerimaan.');
   const result = await client.findReceipt(profile, row.number);
@@ -421,7 +434,7 @@ export async function reopenReceipt(id: string, version: number, actorId: string
       'Hasil pengiriman belum pasti. Gunakan Periksa hasil, bukan pengiriman ulang.',
     );
   if (row.attemptedAt) {
-    const { client, profile } = await connectedAccurate(true);
+    const { client, profile } = await connectedAccurate(true, row.branchId);
     if (profile.id !== row.databaseId || (await client.findReceipt(profile, row.number)))
       throw new HttpError(409, 'Tujuan berbeda atau nomor penerimaan sudah ada. Periksa Accurate.');
   }
