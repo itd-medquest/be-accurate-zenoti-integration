@@ -70,3 +70,26 @@ test('legacy embedded configuration is rejected before opening the old database'
     await rmdir(folder);
   }
 });
+
+test('an unavailable MySQL server exits with a useful error rather than an empty message', async () => {
+  const probe = createServer();
+  await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const address = probe.address();
+  if (!address || typeof address === 'string') throw new Error('Missing test port');
+  await new Promise<void>((resolve, reject) =>
+    probe.close((error) => (error ? reject(error) : resolve())),
+  );
+  const password = 'startup-private-password';
+  const result = await run('src/server.ts', {
+    ...environment('unused'),
+    PORT: '0',
+    DATABASE_SSL: 'false',
+    DATABASE_URL: `mysql://unavailable:${password}@localhost:${address.port}/unreachable`,
+  });
+  assert.equal(result.code, 1);
+  assert.match(result.output, /"code":"ECONNREFUSED"/);
+  assert.match(result.output, /Koneksi MySQL ditolak/);
+  assert.ok(!result.output.includes('"message":""'));
+  assert.ok(!result.output.includes(password));
+  assert.ok(!result.output.includes('mysql://'));
+});

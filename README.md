@@ -57,6 +57,15 @@ npm run dev
 
 API tersedia di `http://localhost:4000`. Endpoint pemeriksaan layanan: `GET /api/health`. Seed khusus admin membuat akun awal tanpa invoice. Setup perusahaan memerlukan SETUP_COMPANY_ID/NAME dan SETUP_CENTER_ID. Untuk data demo di database pengembangan terpisah, `npm run db:seed` tetap tersedia.
 
+Jika laptop memakai instalasi MySQL portable yang sudah diinisialisasi saat migrasi, jalankan database kembali setelah restart laptop sebelum memulai backend:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start-mysql-local.ps1
+npm run dev
+```
+
+Launcher membaca descriptor privat `data/mysql-local-runtime.json` dan memakai database yang sudah ada. Instalasi portable lokal menggunakan port 3307; Compose menggunakan 3306. Error startup `ECONNREFUSED` berarti koneksi ditolak: pastikan MySQL aktif dan host/port `DATABASE_URL` sesuai. Setelah backend siap, `GET /api/health` harus mengembalikan HTTP 200 dengan `status: "ok"` serta `queue: "mysql"`.
+
 ### Deployment dengan database kosong
 
 Struktur database dibuat dari migration repository tanpa membawa data lokal. Ikuti [panduan utama setup MySQL untuk server dev](docs/mysql-migration.md): konfigurasi environment, migration, seed Super Admin pertama, setup PT. MMI, koneksi/tujuan Accurate, serta 8 mapping BCA/BNI untuk Penerimaan Penjualan. Panduan juga memuat kode akun perkiraan referensi, tarif, pembulatan, dan checklist UAT. Perilaku bootstrap akun saat dijalankan ulang dijelaskan pada [panduan deployment](docs/deployment.md).
