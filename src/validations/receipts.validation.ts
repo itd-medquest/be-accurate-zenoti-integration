@@ -60,6 +60,17 @@ export const receiptDraftInput = createInsertSchema(accurateReceipts)
     paymentDate: date,
     paymentReference: z.string().trim().min(1).max(100),
     notes: z.string().trim().max(500),
+    receiptNumber: z
+      .string()
+      .trim()
+      .min(1)
+      .max(255)
+      .refine((value) => !/^0+$/.test(value), 'Nomor receipt tidak boleh 0.')
+      .refine(
+        (value) => !/[\u0000-\u001f\u007f]/.test(value) && !value.startsWith('INT-PENDING-RC-'),
+        'Nomor receipt tidak valid.',
+      )
+      .optional(),
     version: z.number().int().positive(),
   })
   .strict();

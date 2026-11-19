@@ -18,11 +18,15 @@ import {
   draftSource,
   sourceGroups,
   singleReceiptGroups,
+  receiptNumber,
+  manualReceiptNumber,
   lockActor,
   publicDraft,
   type Source,
 } from './receipt-context.service.js';
 import { receiptBalance } from './receipt-delivery.service.js';
+import { pendingReceiptNumber } from '../utils/receipt-number.js';
+import { isDuplicateEntry } from '../repositories/mysql-errors.js';
 import {
   receiptBanks,
   receiptMethods,
@@ -296,6 +300,7 @@ export async function prepareReceipt(invoiceId: string, sourceKey: string, actor
     const previous = await receipts.sourceDraft(invoiceId, sourceKey, tx);
     if (previous) return publicDraft(previous);
     const id = randomUUID();
+    const number = (await receiptNumber(source, group, tx)) ?? pendingReceiptNumber(id);
     const [created] = await receipts.insert(
       {
         id,
@@ -308,7 +313,7 @@ export async function prepareReceipt(invoiceId: string, sourceKey: string, actor
         sourcePayments: group.payments,
         sourceMethod: group.method,
         grossAmount: group.gross,
-        number: source.targetNumber,
+        number,
         paymentDate: day(group.paidAt),
         actorId,
       },
@@ -356,11 +361,17 @@ export async function receiptDetail(id: string) {
     grouped: draft.sourcePayments.some((row) => row.id.endsWith(':collection')),
   };
   const issues: string[] = [];
+  let sourceNumber: string | null = null;
+  let effectiveNumber: string | null = draft.targetNumber ?? draft.number;
   try {
     const current = await draftSource(draft);
     source = current.source;
     group = current.group;
-    if (draft.status === 'DRAFT' && !draft.attemptedAt) singleReceiptGroups(source);
+    if (draft.status === 'DRAFT' && !draft.attemptedAt) {
+      singleReceiptGroups(source);
+      sourceNumber = await receiptNumber(source, group);
+      effectiveNumber = sourceNumber ?? (await manualReceiptNumber(draft));
+    }
   } catch (cause) {
     if (!(cause instanceof HttpError)) throw cause;
     issues.push(cause.message);
@@ -389,12 +400,13 @@ export async function receiptDetail(id: string) {
   }
   return {
     draft: publicDraft(draft),
+    receiptNumber: effectiveNumber === pendingReceiptNumber(draft.id) ? null : effectiveNumber,
     invoice: {
       number: source?.targetNumber ?? invoice.number,
       customer: invoice.customer,
       total: invoice.total,
     },
-    source: group,
+    source: { ...group, receiptNumber: sourceNumber },
     configuration: {
       ...config,
       mappings: config.mappings.filter((row) => row.branchId === draft.branchId),
@@ -404,20 +416,29 @@ export async function receiptDetail(id: string) {
       enabled:
         issues.length === 0 &&
         !balanceIssue &&
+        !!effectiveNumber &&
+        effectiveNumber !== pendingReceiptNumber(draft.id) &&
         !!balance &&
         balance.outstanding >= draft.grossAmount &&
         !['cash', 'gift_card', 'voucher'].includes(draft.sourceMethod),
       message: issues.length
         ? issues.join(' ')
-        : balanceIssue ||
-          (balance && balance.outstanding < draft.grossAmount
-            ? 'Pembayaran melebihi sisa tagihan Accurate. Periksa pembayaran yang sudah dicatat.'
-            : ['cash', 'gift_card', 'voucher'].includes(draft.sourceMethod)
-              ? 'Metode sumber belum mendukung pengiriman penerimaan bank.'
-              : ''),
+        : !effectiveNumber || effectiveNumber === pendingReceiptNumber(draft.id)
+          ? 'Isi No. Receipt dan simpan draft sebelum mengirim ke Accurate.'
+          : balanceIssue ||
+            (balance && balance.outstanding < draft.grossAmount
+              ? 'Pembayaran melebihi sisa tagihan Accurate. Periksa pembayaran yang sudah dicatat.'
+              : ['cash', 'gift_card', 'voucher'].includes(draft.sourceMethod)
+                ? 'Metode sumber belum mendukung pengiriman penerimaan bank.'
+                : ''),
     },
     balance,
     actions: {
+      canSetNumber:
+        issues.length === 0 &&
+        draft.status === 'DRAFT' &&
+        !draft.attemptedAt &&
+        sourceNumber === null,
       canCheck: draft.status === 'NEEDS_REVIEW' && !!draft.attemptedAt,
       canReopen:
         draft.status === 'NEEDS_REVIEW' &&
@@ -433,10 +454,13 @@ export async function saveReceiptDraft(
 ) {
   const existing = await receipts.find(id);
   if (!existing) throw new HttpError(404, 'Draft tidak ditemukan.');
-  const { source } = await draftSource(existing);
+  const { source, group } = await draftSource(existing);
   singleReceiptGroups(source);
-  const number = source.targetNumber;
-  if (!number) throw new HttpError(422, 'Nomor faktur Accurate belum tersedia.');
+  const sourceNumber = await receiptNumber(source, group);
+  if (sourceNumber && input.receiptNumber !== undefined)
+    throw new HttpError(422, 'Nomor receipt dari dokumen sumber tidak dapat diganti manual.');
+  const number = sourceNumber ?? input.receiptNumber ?? (await manualReceiptNumber(existing));
+  if (!number) throw new HttpError(422, 'Isi No. Receipt sebelum menyimpan draft.');
   const { client, profile } = await connectedAccurate(true, existing.branchId);
   const chosen = await receipts.mapping(input.mappingId);
   if (
@@ -497,31 +521,55 @@ export async function saveReceiptDraft(
       );
     if (mapping?.version !== chosen.version)
       throw new HttpError(409, 'Mapping akun berubah. Muat ulang draft.');
-    const [saved] = await receipts.update(
-      id,
-      {
-        number,
-        mappingId: chosen.id,
-        mappingVersion: chosen.version,
-        bank: bankResult,
-        method,
-        bankAccountNo: chosen.accountNo,
-        bankAccountName: chosen.accountName,
-        feeAccountNo: chosen.feeAccountNo,
-        feeAccountName: chosen.feeAccountName,
-        rateBps: amounts.rateBps,
-        feeAmount: amounts.fee,
-        netAmount: amounts.net,
-        paymentDate: input.paymentDate,
-        paymentReference: input.paymentReference,
-        notes: input.notes,
-        reviewedAt: null,
-        version: locked.version + 1,
-        error: null,
-        actorId,
-      },
-      tx,
-    );
+    const [saved] = await receipts
+      .update(
+        id,
+        {
+          number,
+          mappingId: chosen.id,
+          mappingVersion: chosen.version,
+          bank: bankResult,
+          method,
+          bankAccountNo: chosen.accountNo,
+          bankAccountName: chosen.accountName,
+          feeAccountNo: chosen.feeAccountNo,
+          feeAccountName: chosen.feeAccountName,
+          rateBps: amounts.rateBps,
+          feeAmount: amounts.fee,
+          netAmount: amounts.net,
+          paymentDate: input.paymentDate,
+          paymentReference: input.paymentReference,
+          notes: input.notes,
+          reviewedAt: null,
+          version: locked.version + 1,
+          error: null,
+          actorId,
+        },
+        tx,
+      )
+      .catch((cause: unknown) => {
+        if (isDuplicateEntry(cause))
+          throw new HttpError(
+            409,
+            'No. Bukti sudah dipakai oleh penerimaan lain. Periksa riwayat penerimaan.',
+          );
+        throw cause;
+      });
+    if (!sourceNumber && input.receiptNumber !== undefined)
+      await audits.create(
+        {
+          id: randomUUID(),
+          actorId,
+          action: 'receipt.number.manual',
+          entityId: id,
+          details: {
+            number,
+            previousNumber: publicDraft(locked).number,
+            sourceFingerprint: locked.sourceFingerprint,
+          },
+        },
+        tx,
+      );
     await audits.create(
       {
         id: randomUUID(),

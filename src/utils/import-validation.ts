@@ -51,7 +51,7 @@ export function candidateErrors(c: ImportCandidate) {
   )
     errors.push('Persentase pajak tidak sesuai nilai pajak item.');
   if (!c.sourceId) errors.push('Identitas invoice sumber tidak ditemukan.');
-  if (!c.number) errors.push('Nomor invoice/receipt belum tersedia.');
+  if (!c.number && !c.sourceInvoiceNumber) errors.push('Nomor invoice/receipt belum tersedia.');
   if (!c.customer || !c.customerId) errors.push('Nama atau ID customer belum tersedia.');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(c.date) || !Number.isFinite(Date.parse(c.date)))
     errors.push('Tanggal invoice tidak valid.');

@@ -6,6 +6,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import type { AccurateReceiptPayload } from '../src/types/receipt.types.js';
+import { emptyCandidate } from '../src/utils/import-validation.js';
 import { readAccurateReceipt, readReceiptInvoice } from '../src/utils/accurate-receipt.js';
 
 Object.assign(process.env, {
@@ -226,14 +227,20 @@ after(async () => {
 async function fixture(
   method: 'QRIS' | 'BANK_TRANSFER' | 'CREDIT_CARD' | 'DEBIT_CARD' = 'QRIS',
   split = false,
+  format: 'PDF' | 'XLSX' = 'PDF',
+  documentReceipt?: string,
 ) {
   mode = 'normal';
   const branchId = randomUUID(),
     id = randomUUID(),
     targetId = String(++serial),
-    number = 'INV-' + serial;
+    number = 'INV-' + serial,
+    receiptNumber = documentReceipt ?? 'RECEIPT-' + serial;
   const payments = Array.from({ length: split ? 2 : 1 }, (_, index) => ({
-    id: `PAY-${id}-${index}`,
+    id:
+      format === 'PDF'
+        ? `${id}:receipt:${receiptNumber}:${index + 1}`
+        : `${id}:item-${index}:collection`,
     method:
       method === 'QRIS'
         ? ('qris' as const)
@@ -281,6 +288,50 @@ async function fixture(
     targetId,
     targetNumber: number,
   });
+  if (format === 'XLSX') {
+    const batchId = randomUUID(),
+      fileId = randomUUID();
+    const candidate = {
+      ...emptyCandidate('XLSX'),
+      sourceId: id,
+      number: receiptNumber,
+      sourceInvoiceNumber: number,
+      payments,
+      sourceEntries: [
+        {
+          row: 5,
+          invoiceNumber: number,
+          receiptNumber,
+          itemName: 'Service',
+          quantity: 1,
+          net: total,
+          tax: 0,
+          total,
+        },
+      ],
+    };
+    await db
+      .insert(schema.importBatches)
+      .values({ id: batchId, branchId, uploaderId: actorId, status: 'SUBMITTED' });
+    await db.insert(schema.importFiles).values({
+      id: fileId,
+      batchId,
+      name: 'source.xlsx',
+      storedName: 'test-only.xlsx',
+      hash: 'test',
+      size: 1,
+      format: 'XLSX',
+    });
+    await db.insert(schema.importRows).values({
+      id: randomUUID(),
+      batchId,
+      fileId,
+      position: 1,
+      candidate,
+      status: 'QUEUED',
+      invoiceId: id,
+    });
+  }
   const mappingId = randomUUID();
   await db.insert(schema.receiptAccountMappings).values({
     id: mappingId,
@@ -298,6 +349,10 @@ async function fixture(
   const drafts = [];
   for (const group of split ? [] : receiptSourceGroups(payments)) {
     const row = await draftService.prepareReceipt(id, group.key, actorId);
+    if (!receiptNumber.trim() || /^0+$/.test(receiptNumber)) {
+      drafts.push(row);
+      continue;
+    }
     drafts.push(
       await draftService.saveReceiptDraft(
         row.id,
@@ -319,6 +374,7 @@ async function fixture(
     targetId,
     mappingId,
     number,
+    receiptNumber,
     sourceKeys: receiptSourceGroups(payments).map((row) => row.key),
   };
 }
@@ -329,18 +385,17 @@ async function enqueue(row: Awaited<ReturnType<typeof fixture>>['drafts'][number
 }
 
 test('verified contract uses gross paymentAmount, net invoicePayment/chequeAmount and a separate expense discount', async () => {
-  const { drafts, id } = await fixture();
+  const { drafts, id, number, receiptNumber } = await fixture();
   const initial = writes;
   const queued = await enqueue(drafts[0]);
   assert.equal(queued.status, 'QUEUED');
   const frozen = await stored(queued.id);
   assert.ok(frozen.payload);
-  assert.equal(frozen.number, frozen.payload?.detailInvoice[0].invoiceNo);
-  assert.equal(frozen.payload?.number, frozen.payload?.detailInvoice[0].invoiceNo);
-  assert.equal(
-    frozen.payload?.description,
-    `Customer test - Pembayaran Invoices no ${frozen.number}`,
-  );
+  assert.equal(frozen.number, receiptNumber);
+  assert.equal(frozen.payload?.number, receiptNumber);
+  assert.equal(frozen.payload?.detailInvoice[0].invoiceNo, number);
+  assert.notEqual(receiptNumber, number);
+  assert.equal(frozen.payload?.description, `Customer test - Pembayaran Invoices no ${number}`);
   assert.ok(!frozen.payload.description.includes('INTGRTE:'));
   assert.equal(frozen.payload?.detailInvoice[0].paymentAmount, 200001);
   assert.equal(frozen.payload?.detailInvoice[0].detailDiscount?.[0].amount, 1401);
@@ -355,6 +410,116 @@ test('verified contract uses gross paymentAmount, net invoicePayment/chequeAmoun
   );
   assert.equal((await db.select().from(schema.jobs)).length, 0);
 });
+
+test('missing or zero PDF and Sales Accrual receipts allow an audited manual number before any delivery', async () => {
+  for (const format of ['PDF', 'XLSX'] as const) {
+    for (const missing of ['', '0']) {
+      const { drafts, mappingId, number, id } = await fixture('QRIS', false, format, missing);
+      const initial = writes,
+        row = drafts[0];
+      assert.equal(row.number, '');
+      const sourceBefore = (
+        await db.select().from(schema.invoices).where(eq(schema.invoices.id, id))
+      )[0];
+      const detail = await draftService.receiptDetail(row.id);
+      assert.equal(detail.receiptNumber, null);
+      assert.equal(detail.source.receiptNumber, null);
+      assert.equal(detail.actions.canSetNumber, true);
+      assert.equal(detail.validation.editable, true);
+      assert.equal(detail.delivery.enabled, false);
+      await assert.rejects(enqueue(row), /Isi No. Receipt/);
+      const input = {
+        mappingId,
+        mappingVersion: 1,
+        paymentDate: '2026-11-01',
+        paymentReference: 'REFERENCE-REMAINS-INTERNAL',
+        notes: 'Finance checked',
+        version: row.version,
+      };
+      await assert.rejects(
+        draftService.saveReceiptDraft(row.id, input, actorId),
+        /Isi No. Receipt/,
+      );
+      const manual = 'MANUAL-' + row.id;
+      const saved = await draftService.saveReceiptDraft(
+        row.id,
+        { ...input, receiptNumber: manual },
+        actorId,
+      );
+      assert.equal(saved.number, manual);
+      assert.equal(saved.paymentReference, input.paymentReference);
+      const refreshed = await draftService.receiptDetail(row.id);
+      assert.equal(refreshed.receiptNumber, manual);
+      assert.equal(refreshed.actions.canSetNumber, true);
+      assert.equal(refreshed.delivery.enabled, true);
+      const resaved = await draftService.saveReceiptDraft(
+        row.id,
+        { ...input, version: saved.version },
+        actorId,
+      );
+      assert.equal(resaved.number, manual);
+      await enqueue(resaved);
+      await delivery.processOneReceipt();
+      const completed = await stored(row.id);
+      assert.equal(completed.status, 'SUCCEEDED', completed.error ?? '');
+      assert.equal(completed.payload?.number, manual);
+      assert.equal(completed.payload?.detailInvoice[0].invoiceNo, number);
+      assert.equal((await draftService.receiptDetail(row.id)).actions.canSetNumber, false);
+      assert.equal(writes, initial + 1);
+      const sourceAfter = (
+        await db.select().from(schema.invoices).where(eq(schema.invoices.id, id))
+      )[0];
+      assert.deepEqual(sourceAfter.payments, sourceBefore.payments);
+      assert.equal(sourceAfter.number, sourceBefore.number);
+      const audits = await db
+        .select()
+        .from(schema.auditLogs)
+        .where(eq(schema.auditLogs.entityId, row.id));
+      assert.equal(audits.filter((entry) => entry.action === 'receipt.number.manual').length, 1);
+      await assert.rejects(
+        draftService.saveReceiptDraft(
+          row.id,
+          { ...input, receiptNumber: 'CHANGED', version: completed.version },
+          actorId,
+        ),
+        /sudah dikirim/,
+      );
+    }
+  }
+});
+
+test('manual receipt numbers cannot override source numbers or collide within an Accurate database', async () => {
+  const present = await fixture();
+  const input = {
+    mappingId: present.mappingId,
+    mappingVersion: 1,
+    paymentDate: '2026-11-01',
+    paymentReference: 'REF',
+    notes: '',
+    version: present.drafts[0].version,
+    receiptNumber: 'OVERRIDE',
+  };
+  await assert.rejects(
+    draftService.saveReceiptDraft(present.drafts[0].id, input, actorId),
+    /tidak dapat diganti/,
+  );
+  const missing = await fixture('QRIS', false, 'XLSX', '0');
+  await assert.rejects(
+    draftService.saveReceiptDraft(
+      missing.drafts[0].id,
+      {
+        ...input,
+        mappingId: missing.mappingId,
+        version: missing.drafts[0].version,
+        receiptNumber: present.receiptNumber,
+      },
+      actorId,
+    ),
+    /sudah dipakai/,
+  );
+  assert.equal((await draftService.receiptDetail(missing.drafts[0].id)).receiptNumber, null);
+  assert.equal((await stored(missing.drafts[0].id)).version, missing.drafts[0].version);
+});
 test('all approved methods support full payment; direct transfer omits discount completely', async () => {
   for (const method of ['BANK_TRANSFER', 'CREDIT_CARD', 'DEBIT_CARD'] as const) {
     const { drafts } = await fixture(method);
@@ -368,13 +533,13 @@ test('all approved methods support full payment; direct transfer omits discount 
     }
   }
 });
-test('concurrent submits and workers use the invoice number and send the same receipt only once', async () => {
-  const { drafts, number } = await fixture(),
+test('concurrent submits and workers use the source receipt number and send the same receipt only once', async () => {
+  const { drafts, receiptNumber } = await fixture(),
     initial = writes;
   await Promise.all([enqueue(drafts[0]), enqueue(drafts[0])]);
   await Promise.all([delivery.processOneReceipt(), delivery.processOneReceipt()]);
   assert.equal(writes, initial + 1);
-  assert.equal((await stored(drafts[0].id)).number, number);
+  assert.equal((await stored(drafts[0].id)).number, receiptNumber);
   assert.equal((await stored(drafts[0].id)).status, 'SUCCEEDED');
 });
 
@@ -419,13 +584,13 @@ test('a balance read failure leaves saved mappings editable while blocking deliv
   assert.equal(valid.delivery.enabled, true);
 });
 
-test('saving an unattempted legacy draft aligns No. Bukti with the exact invoice number', async () => {
-  const { drafts, number, mappingId } = await fixture();
+test('saving an unattempted legacy draft aligns No. Bukti with the source receipt number', async () => {
+  const { drafts, number, receiptNumber, mappingId } = await fixture();
   await db
     .update(schema.accurateReceipts)
-    .set({ number: 'INT-RC-LEGACY-' + drafts[0].id })
+    .set({ number })
     .where(eq(schema.accurateReceipts.id, drafts[0].id));
-  await assert.rejects(enqueue(drafts[0]), /No. Bukti harus sama/);
+  await assert.rejects(enqueue(drafts[0]), /No. Bukti harus sesuai/);
   const row = await stored(drafts[0].id);
   const saved = await draftService.saveReceiptDraft(
     row.id,
@@ -439,10 +604,11 @@ test('saving an unattempted legacy draft aligns No. Bukti with the exact invoice
     },
     actorId,
   );
-  assert.equal(saved.number, number);
+  assert.equal(saved.number, receiptNumber);
+  assert.equal(saved.paymentReference, row.paymentReference);
   assert.equal(saved.attemptedAt, null);
   const queued = await enqueue(saved);
-  assert.equal((await stored(queued.id)).payload?.number, number);
+  assert.equal((await stored(queued.id)).payload?.number, receiptNumber);
   await delivery.processOneReceipt();
   const completed = await stored(queued.id);
   assert.equal(completed.status, 'SUCCEEDED');
@@ -461,7 +627,40 @@ test('saving an unattempted legacy draft aligns No. Bukti with the exact invoice
     ),
     /sudah dikirim/,
   );
-  assert.equal((await stored(completed.id)).number, number);
+  assert.equal((await stored(completed.id)).number, receiptNumber);
+});
+
+test('Sales Accrual receipt comes from the linked import document, not invoice or Finance reference', async () => {
+  const { drafts, number, receiptNumber } = await fixture('QRIS', false, 'XLSX');
+  const detail = await draftService.receiptDetail(drafts[0].id);
+  assert.equal(detail.source.receiptNumber, receiptNumber);
+  assert.equal(detail.invoice.number, number);
+  await enqueue(drafts[0]);
+  await delivery.processOneReceipt();
+  const completed = await stored(drafts[0].id);
+  assert.equal(completed.status, 'SUCCEEDED', completed.error ?? '');
+  assert.equal(completed.payload?.number, receiptNumber);
+  assert.equal(completed.payload?.detailInvoice[0].invoiceNo, number);
+  assert.ok(!JSON.stringify(completed.payload).includes(completed.paymentReference));
+});
+
+test('a frozen legacy invoice-based number survives delivery and timeout reconciliation unchanged', async () => {
+  const { drafts, number } = await fixture(),
+    initial = writes;
+  await enqueue(drafts[0]);
+  const queued = await stored(drafts[0].id);
+  assert.ok(queued.payload);
+  await db
+    .update(schema.accurateReceipts)
+    .set({ number, payload: { ...queued.payload, number } })
+    .where(eq(schema.accurateReceipts.id, queued.id));
+  mode = 'timeout-after';
+  await delivery.processOneReceipt();
+  assert.equal((await stored(queued.id)).status, 'NEEDS_REVIEW');
+  const reconciled = await delivery.checkReceipt(queued.id, actorId);
+  assert.equal(reconciled?.status, 'SUCCEEDED');
+  assert.equal((await stored(queued.id)).payload?.number, number);
+  assert.equal(writes, initial + 1);
 });
 
 test('invoice detail accepts mandatory primeOwing without receipt-only fields and rejects missing or conflicting balances', () => {
