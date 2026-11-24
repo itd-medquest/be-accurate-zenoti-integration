@@ -72,32 +72,42 @@ export async function saveDestination(branchId: string, masterId: string, actorI
   });
   return accurateStatus(branchId);
 }
-export async function saveRowMapping(
+export async function resolveImportMaster(
   batchId: string,
-  rowId: string,
-  input: z.output<typeof mappingInput>,
-  actorId: string,
+  version: number,
+  kind: 'customer' | 'item',
+  masterId: string,
 ) {
   const batchSnapshot = await batches.findById(batchId);
-  if (
-    !batchSnapshot ||
-    batchSnapshot.status !== 'PREVIEW' ||
-    batchSnapshot.version !== input.version
-  )
+  if (!batchSnapshot || batchSnapshot.status !== 'PREVIEW' || batchSnapshot.version !== version)
     throw new HttpError(409, 'Preview berubah atau sudah disubmit. Muat ulang.');
   const destination = await repository.destination(batchSnapshot.branchId);
   if (!destination) throw new HttpError(422, 'Atur tujuan cabang Accurate terlebih dahulu.');
   const { client, profile } = await connectedAccurate(false, batchSnapshot.branchId);
   if (profile.id !== destination.databaseId)
     throw new HttpError(422, 'Database token berbeda dari tujuan cabang.');
-  const master = await client.masterDetail(profile, input.kind, input.masterId);
-  if (master.id !== input.masterId)
-    throw new HttpError(422, 'ID master respons Accurate tidak sesuai.');
-  if (input.kind === 'item' && !master.unitName)
+  const master = await client.masterDetail(profile, kind, masterId);
+  if (master.id !== masterId) throw new HttpError(422, 'ID master respons Accurate tidak sesuai.');
+  if (kind === 'item' && !master.unitName)
     throw new HttpError(
       422,
       'Master item belum memiliki satuan utama. Lengkapi satuan di Accurate terlebih dahulu.',
     );
+  return { destination, profile, master };
+}
+
+export async function saveRowMapping(
+  batchId: string,
+  rowId: string,
+  input: z.output<typeof mappingInput>,
+  actorId: string,
+) {
+  const { destination, profile, master } = await resolveImportMaster(
+    batchId,
+    input.version,
+    input.kind,
+    input.masterId,
+  );
   await withTransaction(async (tx) => {
     const [batch] = await batches.lockById(batchId, tx);
     if (!batch || batch.version !== input.version || batch.status !== 'PREVIEW')
