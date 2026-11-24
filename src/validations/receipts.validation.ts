@@ -16,7 +16,16 @@ export const receiptFilters = z
     search: z.string().trim().max(100).default(''),
     branch: z.string().max(100).default(''),
     status: z
-      .enum(['', 'TO_REVIEW', 'DRAFT', 'QUEUED', 'SENDING', 'SUCCEEDED', 'NEEDS_REVIEW'])
+      .enum([
+        '',
+        'TO_REVIEW',
+        'DRAFT',
+        'PROCESSING',
+        'QUEUED',
+        'SENDING',
+        'SUCCEEDED',
+        'NEEDS_REVIEW',
+      ])
       .default(''),
     from: date.optional(),
     to: date.optional(),

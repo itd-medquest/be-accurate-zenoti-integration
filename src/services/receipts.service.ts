@@ -171,7 +171,11 @@ export async function receiptOverview(filters: z.infer<typeof receiptFilters>) {
     else if (row.status === 'SUCCEEDED') summary.succeeded++;
     else summary.attention++;
   }
-  const filtered = entries.filter((row) => !filters.status || row.status === filters.status);
+  const filtered = entries.filter((row) =>
+    filters.status === 'PROCESSING'
+      ? ['QUEUED', 'SENDING'].includes(row.status)
+      : !filters.status || row.status === filters.status,
+  );
   const total = filtered.length;
   const page = Math.min(filters.page, Math.max(1, Math.ceil(total / filters.pageSize)));
   return {
