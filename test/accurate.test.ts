@@ -669,6 +669,119 @@ test('a live mixed batch saves full redemption locally and posts only the paid s
   await assert.rejects(enqueue(local.invoiceId!, 'finance'), /full redeem/);
 });
 
+test('adding a Finance item verifies and saves its mapping atomically; deleting removes only its row mapping', async () => {
+  const fixture = await batchFixture('ADD-MAPPED-UI');
+  const endpoint = `/imports/${fixture.batchId}/rows/${fixture.rowId}/items`;
+  const input = {
+    version: 1,
+    name: 'Manual mapped treatment',
+    kind: 'service' as const,
+    quantity: 1,
+    unitPrice: 10000,
+    discountPercent: 0,
+    taxPercent: 0,
+    reason: 'Additional service confirmed from source',
+    accurateMasterId: '20',
+  };
+  const beforeWrites = writes;
+  assert.equal((await request(endpoint, 'viewer', 'POST', input)).status, 403);
+  assert.equal(
+    (await request(endpoint, 'finance', 'POST', { ...input, version: 999 })).status,
+    409,
+  );
+  assert.equal(
+    (await request(endpoint, 'finance', 'POST', { ...input, accurateMasterId: 'not-an-id' }))
+      .status,
+    400,
+  );
+  assert.equal(
+    (await request(endpoint, 'finance', 'POST', { ...input, accurateMasterId: '21' })).status,
+    422,
+  );
+  assert.equal((await imports.getImport(fixture.batchId)).rows[0].candidate.items.length, 1);
+  // An audit write failure must also roll back the shared mapping and new item.
+  await assert.rejects(
+    imports.addImportItem(fixture.batchId, fixture.rowId, 1, input, 'x'.repeat(101)),
+  );
+  const rolledBack = await imports.getImport(fixture.batchId);
+  assert.equal(rolledBack.version, 1);
+  assert.deepEqual(rolledBack.rows[0].candidate, fixture.candidate);
+  const mappingKey = mappingSourceKey(`service:${input.name}`);
+  const failedMapping = await db.query.accurateMappings.findFirst({
+    where: eq(schema.accurateMappings.sourceKey, mappingKey),
+  });
+  assert.equal(failedMapping, undefined);
+  const response = await request(endpoint, 'finance', 'POST', input);
+  assert.equal(response.status, 201, await response.clone().text());
+  const saved = await imports.getImport(fixture.batchId);
+  const candidate = saved.rows[0].candidate;
+  const added = candidate.items[1];
+  assert.equal(saved.version, 2);
+  assert.deepEqual(candidate.accurateSelection?.items[added.id], {
+    id: '20',
+    code: 'ITEM-TEST',
+    name: 'Layanan Test',
+    unitName: 'Jasa',
+  });
+  assert.deepEqual(
+    candidate.accurateSelection?.customer,
+    fixture.candidate.accurateSelection?.customer,
+  );
+  assert.equal(candidate.accountingReviewedAt, undefined);
+  assert.equal(candidate.total, fixture.candidate.total);
+  const log = (
+    await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.entityId, fixture.rowId))
+  ).find((row) => row.action === 'accurate.mapping.select');
+  assert.ok(log);
+  const deleted = await request(
+    `${endpoint}/${encodeURIComponent(added.id)}`,
+    'finance',
+    'DELETE',
+    { version: saved.version },
+  );
+  assert.equal(deleted.status, 200);
+  const after = await imports.getImport(fixture.batchId);
+  assert.equal(after.rows[0].candidate.items.length, 1);
+  assert.equal(after.rows[0].candidate.accurateSelection?.items[added.id], undefined);
+  assert.deepEqual(
+    after.rows[0].candidate.accurateSelection?.items['line-1'],
+    fixture.candidate.accurateSelection?.items['line-1'],
+  );
+  assert.ok(
+    await db.query.accurateMappings.findFirst({
+      where: eq(schema.accurateMappings.sourceKey, mappingKey),
+    }),
+  );
+  assert.equal(writes, beforeWrites);
+});
+
+test('simulation preview exposes the saved Accurate destination and mappings without enabling live delivery', async () => {
+  const fixture = await batchFixture('SIMULATION-MAPPING-READ');
+  const beforeWrites = writes;
+  try {
+    const changed = await request('/settings/accurate', 'super_admin', 'PATCH', {
+      enabled: true,
+      accurate: { mode: 'simulation' },
+    });
+    assert.equal(changed.status, 200);
+    const preview = await imports.getImport(fixture.batchId);
+    assert.equal(preview.mode, 'simulation');
+    assert.equal(preview.accurateDestination?.databaseId, '999');
+    assert.equal(preview.accurateDestination?.targetBranchId, '300');
+    assert.deepEqual(
+      preview.rows[0].candidate.accurateSelection,
+      fixture.candidate.accurateSelection,
+    );
+    assert.equal(writes, beforeWrites);
+  } finally {
+    const restored = await request('/settings/accurate', 'super_admin', 'PATCH', {
+      enabled: true,
+      accurate: { mode: 'live' },
+    });
+    assert.equal(restored.status, 200);
+  }
+});
+
 // Run after HTTP/file cleanup hooks, including when an earlier teardown failed.
 afterDatabase(async () => {
   try {

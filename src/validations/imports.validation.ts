@@ -68,6 +68,7 @@ export const removeFileBodySchema = z.object({ version: z.number().int().positiv
 
 export const addItemBodySchema = z
   .object({
+    accurateMasterId: z.string().regex(/^\d+$/).max(30).optional(),
     version: z.number().int().positive(),
     name: z.string().trim().min(1).max(200),
     kind: z.enum(['service', 'product']),

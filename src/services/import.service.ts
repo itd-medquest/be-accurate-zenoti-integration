@@ -30,8 +30,9 @@ import {
   liveInvoiceErrors,
   type AccurateDestination,
 } from '../utils/accurate-payload.js';
-import { applySavedMappings } from '../utils/accurate-mapping.js';
-import { isFullRedemption, isLocalOnlyInvoice } from '../utils/redemption.js';
+import { applySavedMappings, mappingSourceKey } from '../utils/accurate-mapping.js';
+import { isFullRedemption, isLocalOnlyInvoice, isFreeConsultation } from '../utils/redemption.js';
+import { resolveImportMaster } from './accurate-mapping.service.js';
 async function freezeAccurateDelivery(
   c: ImportCandidate,
   destination: AccurateDestination,
@@ -301,8 +302,9 @@ export async function getImport(id: string) {
   const files = storedFiles.filter((file) => activeFiles.has(file.id));
   const preview = [];
   const connection = await accurateConnection(undefined, batch.branchId);
-  const destination =
-    connection.mode === 'live' ? await accurateRepository.destination(batch.branchId) : undefined;
+  // The saved destination is needed to inspect existing mappings in every mode.
+  // Readiness and delivery still use the explicit live-mode checks below.
+  const destination = await accurateRepository.destination(batch.branchId);
   for (const row of rows) {
     let status = row.status,
       duplicateInvoiceId = row.duplicateInvoiceId;
@@ -719,6 +721,7 @@ export async function addImportItem(
   rowId: string,
   version: number,
   input: {
+    accurateMasterId?: string;
     name: string;
     kind: 'service' | 'product';
     quantity: number;
@@ -741,6 +744,9 @@ export async function addImportItem(
       422,
       'Qty, harga unit, diskon, atau pajak tidak valid. Persen dan harga unit maksimal 6 desimal; nilai baris maksimal 2.147.483.647.',
     );
+  const mapping = input.accurateMasterId
+    ? await resolveImportMaster(batchId, version, 'item', input.accurateMasterId)
+    : undefined;
   await withTransaction(async (tx) => {
     const [batch] = await importBatchesRepository.lockById(batchId, tx);
     if (!batch) throw new HttpError(404, 'Batch tidak ditemukan.');
@@ -773,6 +779,67 @@ export async function addImportItem(
       items: [...row.candidate.items, item],
       accountingReviewedAt: undefined,
     };
+    if (mapping) {
+      if (isFreeConsultation(item))
+        throw new HttpError(422, 'Consultation gratis tidak memerlukan mapping Accurate.');
+      const [branch] = await branchesRepository.lockById(batch.branchId, tx);
+      const destination = await accurateRepository.destination(batch.branchId, tx);
+      if (
+        !branch?.active ||
+        destination?.databaseId !== mapping.destination.databaseId ||
+        destination.targetBranchId !== mapping.destination.targetBranchId
+      )
+        throw new HttpError(409, 'Tujuan cabang berubah. Muat ulang mapping.');
+      const previous = candidate.accurateSelection;
+      const selection: NonNullable<ImportCandidate['accurateSelection']> =
+        previous?.databaseId === destination.databaseId &&
+        previous.targetBranchId === destination.targetBranchId
+          ? { ...previous, items: { ...previous.items } }
+          : {
+              databaseId: destination.databaseId,
+              targetBranchId: destination.targetBranchId,
+              items: {},
+            };
+      const master = mapping.master;
+      selection.items[item.id] = {
+        id: master.id,
+        code: master.code,
+        name: master.name,
+        unitName: master.unitName,
+      };
+      candidate.accurateSelection = selection;
+      await accurateRepository.saveMapping(
+        {
+          id: randomUUID(),
+          branchId: batch.branchId,
+          databaseId: destination.databaseId,
+          kind: 'item',
+          sourceKey: mappingSourceKey(`${item.kind}:${item.name}`),
+          targetId: master.id,
+          targetCode: master.code,
+          targetName: master.name,
+          unitName: master.unitName,
+          itemType: master.itemType,
+        },
+        tx,
+      );
+      await auditLogsRepository.create(
+        {
+          id: randomUUID(),
+          actorId,
+          action: 'accurate.mapping.select',
+          entityId: rowId,
+          details: {
+            kind: 'item',
+            itemId: item.id,
+            targetId: master.id,
+            targetCode: master.code,
+            databaseId: destination.databaseId,
+          },
+        },
+        tx,
+      );
+    }
     candidate.discount = candidate.items.reduce((n, i) => n + i.discount, 0);
     if (calculation.adjusted)
       candidate.warnings = [
@@ -848,6 +915,11 @@ export async function deleteImportItem(
       items: row.candidate.items.filter((item) => item.id !== itemId),
       accountingReviewedAt: undefined,
     };
+    if (candidate.accurateSelection) {
+      const items = { ...candidate.accurateSelection.items };
+      delete items[itemId];
+      candidate.accurateSelection = { ...candidate.accurateSelection, items };
+    }
     candidate.discount = candidate.items.reduce((n, item) => n + item.discount, 0);
     await importRowsRepository.updateById({ candidate }, rowId, tx);
     await importBatchesRepository.updateById({ version: version + 1 }, batchId, tx);
@@ -860,6 +932,7 @@ export async function deleteImportItem(
         details: {
           rowId,
           item: removed,
+          accurateMapping: row.candidate.accurateSelection?.items[itemId] ?? null,
           position: index + 1,
           previousReviewedAt: row.candidate.accountingReviewedAt ?? null,
           sourceTotals: {
