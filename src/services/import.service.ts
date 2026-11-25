@@ -1,3 +1,9 @@
+import {
+  exceptionFingerprint,
+  hasCurrentReviewException,
+  hasUnresolvedPackageParent,
+  packageExtractionErrors,
+} from '../utils/import-exceptions.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -86,6 +92,29 @@ export function reviewErrors(c: ImportCandidate) {
   if (c.packageName && config.IMPORT_PACKAGE_TAX_POLICY !== 'proportional')
     errors.push('Aturan alokasi pajak paket belum disetujui.');
   return errors;
+}
+export function exceptionReview(candidate: ImportCandidate) {
+  const errors = packageExtractionErrors(candidate);
+  if (!errors.length) return { errors, allowed: false, blockers: [], accepted: false };
+  const without = {
+    ...candidate,
+    reviewException: undefined,
+    accountingReviewedAt: 'review-preview',
+    errors: candidate.errors.filter((error) => !errors.includes(error)),
+  };
+  const blockers = reviewErrors(without).filter(
+    (error) => error !== 'Pilih Status Invoices Open atau Closed setelah memeriksa sumber.',
+  );
+  if (errors.length && hasUnresolvedPackageParent(candidate))
+    blockers.push(
+      'Lengkapi layanan penyusun paket dan hapus baris induk sebelum melanjutkan dengan catatan.',
+    );
+  return {
+    errors,
+    allowed: errors.length > 0 && blockers.length === 0,
+    blockers,
+    accepted: hasCurrentReviewException(candidate),
+  };
 }
 export async function createImport(
   branchId: string,
@@ -213,13 +242,21 @@ export async function reparseImportFile(
   fileId: string,
   version: number,
   actorId: string,
+  resetReview = false,
 ) {
   const snapshot = await importBatchesRepository.findById(batchId);
   const file = await importFilesRepository.findInBatch(fileId, batchId);
   if (!snapshot || !file) throw new HttpError(404, 'File tidak ditemukan.');
   if (snapshot.status !== 'PREVIEW' || snapshot.version !== version)
     throw new HttpError(409, 'Draft berubah atau sudah disubmit. Muat ulang.');
-  if (file.format !== 'PDF' || !file.error || !/^[a-f0-9-]{36}$/.test(file.storedName))
+  const previousRows = await importRowsRepository.listActiveForFile(batchId, fileId);
+  const recoverablePackage =
+    resetReview && previousRows.some((row) => packageExtractionErrors(row.candidate).length > 0);
+  if (
+    file.format !== 'PDF' ||
+    (!file.error && !recoverablePackage) ||
+    !/^[a-f0-9-]{36}$/.test(file.storedName)
+  )
     throw new HttpError(409, 'Baca ulang hanya tersedia untuk PDF draft yang gagal dibaca.');
   const path = join(storageRoot, file.storedName);
   const buffer = await readFile(path);
@@ -236,7 +273,10 @@ export async function reparseImportFile(
       throw new HttpError(409, 'Draft berubah selama pembacaan. Muat ulang.');
     const active = await importRowsRepository.listActive(batchId, tx);
     const previous = active.filter((r) => r.fileId === fileId);
-    if (!previous.length || previous.some((r) => r.invoiceId || r.candidate.accountingReviewedAt))
+    if (
+      !previous.length ||
+      previous.some((r) => r.invoiceId || (r.candidate.accountingReviewedAt && !recoverablePackage))
+    )
       throw new HttpError(
         409,
         'Preview sudah diperiksa atau dihapus. Upload ulang bila diperlukan.',
@@ -279,6 +319,15 @@ export async function reparseImportFile(
           previousRows: previous.map((r) => r.id),
           invoices: candidates.length,
           sourceHash: file.hash,
+          resetReview: recoverablePackage,
+          previousReviews: recoverablePackage
+            ? previous.map((row) => ({
+                rowId: row.id,
+                reviewedAt: row.candidate.accountingReviewedAt,
+                reviewException: row.candidate.reviewException,
+                itemCount: row.candidate.items.length,
+              }))
+            : undefined,
         },
       },
       tx,
@@ -328,6 +377,7 @@ export async function getImport(id: string) {
     }
     preview.push({
       ...row,
+      exceptionReview: exceptionReview(row.candidate),
       status,
       duplicateInvoiceId,
       errors: [
@@ -380,7 +430,14 @@ export async function reviewRow(
     if (!row || row.status === 'DELETED')
       throw new HttpError(404, 'Baris invoice tidak ditemukan.');
     await importRowsRepository.updateById(
-      { candidate: { ...row.candidate, businessStatus, accountingReviewedAt: undefined } },
+      {
+        candidate: {
+          ...row.candidate,
+          businessStatus,
+          accountingReviewedAt: undefined,
+          reviewException: undefined,
+        },
+      },
       row.id,
       tx,
     );
@@ -432,6 +489,23 @@ export async function submitImport(
         ...(connection.mode === 'live' ? liveInvoiceErrors(c, destination) : []),
       ];
       if (errors.length) throw new HttpError(422, `${c.number || 'Invoice'}: ${errors.join(' ')}`);
+      if (hasCurrentReviewException(c))
+        await auditLogsRepository.create(
+          {
+            id: randomUUID(),
+            actorId,
+            action: 'import.exception.submit',
+            entityId: batchId,
+            details: {
+              rowId: row.id,
+              reviewedBy: c.reviewException!.actorId,
+              reason: c.reviewException!.reason,
+              errors: c.reviewException!.errors,
+              fingerprint: c.reviewException!.fingerprint,
+            },
+          },
+          tx,
+        );
       const hash = candidateHash(c);
       const existing = await invoicesRepository.findBySource(
         c.sourceId,
@@ -625,7 +699,8 @@ export async function reviewPackage(
     name: string;
     quantity: number;
     unitPrice: number;
-    discountPercent: number;
+    discountPercent?: number;
+    discountAmount?: number;
     tax?: number;
     taxPercent?: number;
   }[],
@@ -666,6 +741,7 @@ export async function reviewPackage(
     const candidate = {
       ...row.candidate,
       accountingReviewedAt: undefined,
+      reviewException: undefined,
       items: [
         ...row.candidate.items.filter((i) => i.id !== parent.id && !i.id.startsWith(prefix)),
         ...items.map((i, index) => ({
@@ -726,7 +802,8 @@ export async function addImportItem(
     kind: 'service' | 'product';
     quantity: number;
     unitPrice: number;
-    discountPercent: number;
+    discountPercent?: number;
+    discountAmount?: number;
     taxPercent: number;
     reason: string;
   },
@@ -737,6 +814,7 @@ export async function addImportItem(
     quantity: input.quantity,
     unitPrice: input.unitPrice,
     discountPercent: input.discountPercent,
+    discountAmount: input.discountAmount,
     taxPercent: input.taxPercent,
   });
   if (!calculation)
@@ -761,9 +839,7 @@ export async function addImportItem(
       throw new HttpError(409, 'Invoice yang sudah disubmit tidak dapat ditambah item.');
     if (row.candidate.items.length >= 500)
       throw new HttpError(422, 'Maksimal 500 item per invoice.');
-    const decomposedParents = (row.candidate.packageParents ?? []).filter(
-      (p) => !row.candidate.items.some((i) => i.id === p.id),
-    );
+    const decomposedParents = row.candidate.packageParents ?? [];
     const prefix =
       decomposedParents.length === 1
         ? decomposedParents[0].id + ':detail:manual:'
@@ -778,6 +854,7 @@ export async function addImportItem(
       ...row.candidate,
       items: [...row.candidate.items, item],
       accountingReviewedAt: undefined,
+      reviewException: undefined,
     };
     if (mapping) {
       if (isFreeConsultation(item))
@@ -914,6 +991,7 @@ export async function deleteImportItem(
       ...row.candidate,
       items: row.candidate.items.filter((item) => item.id !== itemId),
       accountingReviewedAt: undefined,
+      reviewException: undefined,
     };
     if (candidate.accurateSelection) {
       const items = { ...candidate.accurateSelection.items };
@@ -958,6 +1036,7 @@ export async function correctImportItem(
     quantity: number;
     unitPrice: number;
     discountPercent?: number;
+    discountAmount?: number;
     tax?: number;
     taxPercent?: number;
     reason: string;
@@ -984,14 +1063,15 @@ export async function correctImportItem(
       );
     if (
       input.discountPercent === undefined &&
+      input.discountAmount === undefined &&
       (input.quantity !== original.quantity || input.unitPrice !== original.unitPrice)
     )
-      throw new HttpError(422, 'Isi diskon persen secara eksplisit ketika qty atau harga diubah.');
+      throw new HttpError(422, 'Isi diskon persen atau nominal secara eksplisit ketika qty atau harga diubah.');
     const calculation = calculateItemCorrection(original, input);
     if (!calculation)
       throw new HttpError(
         422,
-        'Periksa diskon dan pajak (0–100%, maksimal 6 desimal). Saat nilai setelah diskon berubah, isi pajak persen. Nilai final item maksimal 2.147.483.647.',
+        'Periksa diskon persen dan pajak (0-100%, maksimal 6 desimal), atau diskon nominal maksimal harga baris. Saat nilai setelah diskon berubah, isi pajak persen. Nilai final item maksimal 2.147.483.647.',
       );
     const updated = {
       ...original,
@@ -1002,6 +1082,7 @@ export async function correctImportItem(
       ...row.candidate,
       items: row.candidate.items.map((item) => (item.id === itemId ? updated : item)),
       accountingReviewedAt: undefined,
+      reviewException: undefined,
     };
     candidate.discount = candidate.items.reduce((n, item) => n + item.discount, 0);
     // Source totals, provenance, parser exceptions, IDs and payments remain immutable.
@@ -1039,6 +1120,7 @@ export async function markImportRowReviewed(
   rowId: string,
   version: number,
   actorId: string,
+  exceptionReason?: string,
 ) {
   await withTransaction(async (tx) => {
     const [batch] = await importBatchesRepository.lockById(batchId, tx);
@@ -1046,11 +1128,57 @@ export async function markImportRowReviewed(
       throw new HttpError(409, 'Preview berubah atau tidak dapat diperiksa. Muat ulang.');
     const row = await importRowsRepository.findInBatch(rowId, batchId, tx);
     if (!row || row.status === 'DELETED') throw new HttpError(404, 'Invoice tidak ditemukan.');
-    await importRowsRepository.updateById(
-      { candidate: { ...row.candidate, accountingReviewedAt: new Date().toISOString() } },
-      rowId,
-      tx,
-    );
+    const candidate = { ...row.candidate, accountingReviewedAt: new Date().toISOString() };
+    if (exceptionReason !== undefined) {
+      const reason = exceptionReason.trim(),
+        review = exceptionReview(candidate);
+      const connection = await accurateConnection(tx, batch.branchId);
+      const destination =
+        connection.mode === 'live'
+          ? await accurateRepository.destination(batch.branchId, tx)
+          : undefined;
+      const blockers = [
+        ...review.blockers,
+        ...(!['OPEN', 'CLOSED'].includes(candidate.businessStatus)
+          ? ['Pilih status invoice sebelum melanjutkan dengan catatan.']
+          : []),
+        ...(connection.mode === 'live' ? liveInvoiceErrors(candidate, destination) : []),
+      ];
+      if (reason.length < 10 || reason.length > 1000 || !review.allowed || blockers.length)
+        throw new HttpError(
+          422,
+          blockers.join(' ') ||
+            'Catatan hanya tersedia untuk pengecualian pembacaan paket dengan rincian dan total yang sudah sesuai. Isi alasan 10-1000 karakter.',
+        );
+      candidate.reviewException = {
+        reason,
+        actorId,
+        reviewedAt: candidate.accountingReviewedAt,
+        fingerprint: exceptionFingerprint(candidate),
+        errors: review.errors,
+      };
+      await auditLogsRepository.create(
+        {
+          id: randomUUID(),
+          actorId,
+          action: 'import.exception.review',
+          entityId: batchId,
+          details: {
+            rowId,
+            reason,
+            errors: review.errors,
+            fingerprint: candidate.reviewException.fingerprint,
+            sourceTotals: {
+              subtotal: candidate.subtotal,
+              tax: candidate.tax,
+              total: candidate.total,
+            },
+          },
+        },
+        tx,
+      );
+    }
+    await importRowsRepository.updateById({ candidate }, rowId, tx);
     await importBatchesRepository.updateById({ version: batch.version + 1 }, batchId, tx);
     await auditLogsRepository.create(
       {
@@ -1058,7 +1186,11 @@ export async function markImportRowReviewed(
         actorId,
         action: 'import.row.reviewed',
         entityId: batchId,
-        details: { rowId, hasValidationErrors: reviewErrors(row.candidate).length > 0 },
+        details: {
+          rowId,
+          hasValidationErrors: reviewErrors(candidate).length > 0,
+          withException: hasCurrentReviewException(candidate),
+        },
       },
       tx,
     );

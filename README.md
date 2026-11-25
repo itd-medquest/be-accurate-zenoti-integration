@@ -159,3 +159,5 @@ Request flow: **route → validation → controller → service → repository �
 ## Git Rules
 
 Create a branch for each change, include migrations when needed, run `npm run typecheck`, `npm test`, and `npm run build`, then open a pull request. Keep `package-lock.json` and migration history. Exclude local environments, credentials, databases, source documents, and build/test artifacts from commits.
+
+Package Benefit extraction, nominal/percentage discount requests, and audited review exceptions are documented in the [package review guide](docs/package-benefit-review.md).

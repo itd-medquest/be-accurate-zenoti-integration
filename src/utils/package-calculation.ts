@@ -10,10 +10,26 @@ export type CorrectableItem = {
   taxPercent?: number;
   taxRoundingAdjustment?: number;
 };
+export type DiscountInput = { discountPercent?: number; discountAmount?: number };
+
+export function discountForBase(base: number, input: DiscountInput) {
+  if (input.discountAmount !== undefined)
+    return input.discountPercent === undefined &&
+      Number.isSafeInteger(input.discountAmount) &&
+      input.discountAmount >= 0 &&
+      input.discountAmount <= base
+      ? input.discountAmount
+      : NaN;
+  return input.discountPercent === undefined
+    ? NaN
+    : roundedPercentageAmount(base, input.discountPercent);
+}
+
 export type ItemCorrectionInput = {
   quantity: number;
   unitPrice: number;
   discountPercent?: number;
+  discountAmount?: number;
   taxPercent?: number;
   tax?: number;
 };
@@ -29,14 +45,15 @@ export function calculateItemCorrection(original: CorrectableItem, input: ItemCo
     !Number.isSafeInteger(base) ||
     base > 2147483647 ||
     (input.discountPercent === undefined &&
+      input.discountAmount === undefined &&
       (input.quantity !== original.quantity || input.unitPrice !== original.unitPrice)) ||
     (input.tax !== undefined && input.taxPercent !== undefined)
   )
     return null;
   const discount =
-    input.discountPercent === undefined
+    input.discountPercent === undefined && input.discountAmount === undefined
       ? original.discount
-      : roundedPercentageAmount(base, input.discountPercent);
+      : discountForBase(base, input);
   const net = base - discount;
   const originalNet = original.quantity * original.unitPrice - original.discount;
   if (net !== originalNet && input.tax === undefined && input.taxPercent === undefined) return null;
@@ -58,13 +75,18 @@ export function calculateItemCorrection(original: CorrectableItem, input: ItemCo
     quantity: input.quantity,
     unitPrice: input.unitPrice,
     discount,
-    discountPercent: input.discountPercent ?? original.discountPercent,
+    discountPercent:
+      input.discountAmount !== undefined
+        ? undefined
+        : (input.discountPercent ?? original.discountPercent),
     discountRoundingAdjustment:
-      input.discountPercent === undefined
-        ? original.discountRoundingAdjustment
-        : percentageDiscountAmount(base, input.discountPercent) === discount
-          ? undefined
-          : 0,
+      input.discountAmount !== undefined
+        ? undefined
+        : input.discountPercent === undefined
+          ? original.discountRoundingAdjustment
+          : percentageDiscountAmount(base, input.discountPercent) === discount
+            ? undefined
+            : 0,
     tax,
     taxPercent: input.taxPercent ?? (preserveTax ? original.taxPercent : undefined),
     taxRoundingAdjustment:
@@ -87,14 +109,15 @@ export type PackageInput = {
   name: string;
   quantity: number;
   unitPrice: number;
-  discountPercent: number;
+  discountPercent?: number;
+  discountAmount?: number;
   taxPercent?: number;
   tax?: number;
 };
 const SCALE = 100000000n;
 export function calculateNewItem(input: PackageInput) {
   const base = input.quantity * input.unitPrice;
-  const discount = roundedPercentageAmount(base, input.discountPercent);
+  const discount = discountForBase(base, input);
   const net = base - discount;
   const tax =
     input.taxPercent === undefined ? input.tax! : roundedPercentageAmount(net, input.taxPercent);
@@ -119,7 +142,17 @@ export function roundedPercentageAmount(base: number, percent: number): number {
 function rounded(value: bigint) {
   return Number((value + SCALE / 2n) / SCALE);
 }
-function reconcile(values: bigint[], target: number) {
+function reconcile(values: bigint[], target: number, locked: boolean[] = []): number[] {
+  if (locked.some(Boolean)) {
+    const flexible = values.flatMap((v, index) => (locked[index] ? [] : [v]));
+    const fixed = values.reduce(
+      (sum, value, index) => sum + (locked[index] ? rounded(value) : 0),
+      0,
+    );
+    const adjusted = reconcile(flexible, target - fixed);
+    let cursor = 0;
+    return values.map((value, index) => (locked[index] ? rounded(value) : adjusted[cursor++]));
+  }
   const initial = values.map(rounded),
     sum = values.reduce((n, v) => n + v, 0n);
   if (!Number.isSafeInteger(target) || target < 0 || sum === 0n) return initial;
@@ -157,17 +190,28 @@ export function calculatePackage(lines: PackageInput[], targetNet: number, targe
         !validUnitPrice(i.unitPrice) ||
         !Number.isSafeInteger(i.quantity * i.unitPrice) ||
         i.quantity * i.unitPrice > 2147483647 ||
-        percentUnits(i.discountPercent) === null ||
+        (i.discountAmount !== undefined
+          ? i.discountPercent !== undefined ||
+            !Number.isSafeInteger(i.discountAmount) ||
+            i.discountAmount < 0 ||
+            i.discountAmount > i.quantity * i.unitPrice
+          : i.discountPercent === undefined || percentUnits(i.discountPercent) === null) ||
         (i.taxPercent !== undefined
           ? percentUnits(i.taxPercent) === null
           : !Number.isSafeInteger(i.tax) || i.tax! < 0),
     )
   )
     return null;
-  const exactNets = lines.map(
-    (i) => BigInt(i.quantity * i.unitPrice) * (SCALE - percentUnits(i.discountPercent)!),
+  const exactNets = lines.map((i) =>
+    i.discountAmount !== undefined
+      ? BigInt(i.quantity * i.unitPrice - i.discountAmount) * SCALE
+      : BigInt(i.quantity * i.unitPrice) * (SCALE - percentUnits(i.discountPercent!)!),
   );
-  const nets = reconcile(exactNets, targetNet);
+  const nets = reconcile(
+    exactNets,
+    targetNet,
+    lines.map((i) => i.discountAmount !== undefined),
+  );
   const taxes = lines.every((i) => i.taxPercent !== undefined)
     ? reconcile(
         lines.map((i, k) => BigInt(nets[k]) * percentUnits(i.taxPercent!)!),
@@ -179,12 +223,14 @@ export function calculatePackage(lines: PackageInput[], targetNet: number, targe
   const items = lines.map((i, k) => {
     const base = i.quantity * i.unitPrice,
       discount = base - nets[k];
+    const { discountAmount: _sourceAmount, ...line } = i;
     return {
-      ...i,
+      ...line,
       discount,
       tax: taxes[k],
-      ...((BigInt(base) * percentUnits(i.discountPercent)!) % SCALE !== 0n ||
-      discount !== roundedPercentageAmount(base, i.discountPercent)
+      ...(i.discountPercent !== undefined &&
+      ((BigInt(base) * percentUnits(i.discountPercent)!) % SCALE !== 0n ||
+        discount !== roundedPercentageAmount(base, i.discountPercent))
         ? {
             discountRoundingAdjustment: discount - roundedPercentageAmount(base, i.discountPercent),
           }

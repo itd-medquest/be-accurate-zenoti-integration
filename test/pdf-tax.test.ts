@@ -237,3 +237,127 @@ test('OCR benefit cells become service lines automatically and large source mism
   assert.equal(incomplete.items[0].quantity, 1);
   assert.equal(incomplete.packageParents?.length, 1);
 });
+
+function detailedBenefits(
+  subtotal: number,
+  tax: number,
+  discounts: string[],
+  parent = 'Custom Package-TEST',
+) {
+  const page = receipt(subtotal, tax)[0];
+  page.tokens = page.tokens.filter((token) => token.y > 350 || token.text.includes('InvId='));
+  page.tokens = page.tokens.map((token) =>
+    token.text === 'Glow Package-Test(1)' ? { ...token, text: parent + '(1)' } : token,
+  );
+  const cells: [number, number, string][] = [
+    [51, 312, 'Benefit'],
+    [92, 312, 'Type'],
+    [125, 312, 'Price'],
+    [156, 312, 'Discount'],
+    [192, 307, 'benefits'],
+  ];
+  const names = ['Fractional IPL Shoot', 'Indiba Face Lifting Facial', 'Skin Brightening Facial'];
+  const prices = ['4.504.505', '1.801.802', '2.252.250'];
+  for (let index = 0; index < discounts.length; index++) {
+    const y = 290 - index * 32;
+    cells.push(
+      [43, y + 9, names[index]],
+      [88, y, 'Service'],
+      [116, y, prices[index]],
+      [154, y, discounts[index]],
+      [204, y, index === 1 ? '1' : '5'],
+    );
+  }
+  cells.push([45, 160, '-----']);
+  page.tokens.push(...cells.map(([x, y, text]) => ({ x, y, text })));
+  return page;
+}
+
+test('mixed nominal and percentage Benefit rows split all treatments, preserve nominal discount and reconcile Rp1', () => {
+  const [c] = parsePdfPages([detailedBenefits(1981081, 217919, ['80%', '1.622.523', '60%'])]);
+  assert.deepEqual(
+    c.items.map((item) => item.name),
+    ['Fractional IPL Shoot', 'Indiba Face Lifting Facial', 'Skin Brightening Facial'],
+  );
+  assert.deepEqual(
+    c.items.map((item) => item.quantity),
+    [5, 1, 5],
+  );
+  assert.deepEqual(
+    c.items.map((item) => item.unitPrice),
+    [900901, 1801802, 450450],
+  );
+  assert.equal(c.items[1].discount, 1622523);
+  assert.equal(c.items[1].discountPercent, undefined);
+  assert.equal(
+    c.items.reduce((sum, item) => sum + item.unitPrice * item.quantity - item.discount, 0),
+    1981081,
+  );
+  assert.equal(
+    c.items.reduce((sum, item) => sum + item.tax, 0),
+    217919,
+  );
+  assert.equal(c.packageParents?.length, 1);
+  assert.ok(!c.items.some((item) => item.id === c.packageParents?.[0].id));
+  assert.deepEqual(candidateErrors(c), []);
+});
+
+test('a Trial parent is recognized from a complete nominal Benefit table without a package keyword', () => {
+  const page = detailedBenefits(179279, 19721, ['80%', '1.622.523'], 'Trial Special-TEST');
+  page.tokens = page.tokens.filter((token) => !(token.y >= 280 && token.y < 300));
+  const [c] = parsePdfPages([page]);
+  assert.equal(c.items.length, 1);
+  assert.equal(c.items[0].name, 'Indiba Face Lifting Facial');
+  assert.equal(c.items[0].discount, 1622523);
+  assert.equal(c.total, 199000);
+  assert.deepEqual(candidateErrors(c), []);
+});
+
+test('an unreadable nominal row retains the parent and blocks partial treatment extraction', () => {
+  const [c] = parsePdfPages([detailedBenefits(1981081, 217919, ['80%', 'unreadable', '60%'])]);
+  assert.equal(c.items.length, 1);
+  assert.match(c.items[0].name, /Custom Package/);
+  assert.equal(c.packageParents?.length, 1);
+  assert.ok(candidateErrors(c).some((error) => error.includes('Rincian tabel Benefit')));
+});
+
+test('nominal Benefit discounts outside their row price remain blocked', () => {
+  const [c] = parsePdfPages([detailedBenefits(1981081, 217919, ['80%', '9.999.999', '60%'])]);
+  assert.match(c.items[0].name, /Custom Package/);
+  assert.ok(candidateErrors(c).length > 0);
+});
+
+for (const count of [2, 4, 8])
+  test(`a complete nominal Benefit table extracts all ${count} rows without a fixed item count`, () => {
+    const page = receipt(count * 900, count * 99)[0];
+    page.tokens = page.tokens.filter((token) => token.y > 350 || token.text.includes('InvId='));
+    const cells: [number, number, string][] = [
+      [51, 312, 'Benefit'],
+      [92, 312, 'Type'],
+      [125, 312, 'Price'],
+      [156, 312, 'Discount'],
+      [192, 307, 'benefits'],
+    ];
+    for (let index = 0; index < count; index++) {
+      const y = 290 - index * 24;
+      cells.push(
+        [43, y, 'Treatment ' + (index + 1)],
+        [88, y, 'Service'],
+        [116, y, '1.000'],
+        [154, y, '100'],
+        [204, y, index % 2 ? '2' : '1'],
+      );
+    }
+    cells.push([45, 70, '-----']);
+    page.tokens.push(...cells.map(([x, y, text]) => ({ x, y, text })));
+    const [candidate] = parsePdfPages([page]);
+    assert.equal(candidate.items.length, count);
+    assert.equal(
+      candidate.items.reduce(
+        (sum, item) => sum + item.quantity * item.unitPrice - item.discount,
+        0,
+      ),
+      count * 900,
+    );
+    assert.deepEqual(candidateErrors(candidate), []);
+  });

@@ -1,7 +1,7 @@
 import { createCanvas } from '@napi-rs/canvas';
 
 // Raster-only synthetic receipt: no patient information, font mappings or text layer.
-export function ocrReceiptPdf(withBenefits = false) {
+export function ocrReceiptPdf(withBenefits = false, nominalBenefit = false) {
   const canvas = createCanvas(1836, 2376),
     ctx = canvas.getContext('2d');
   ctx.scale(3, 3);
@@ -75,7 +75,7 @@ export function ocrReceiptPdf(withBenefits = false) {
       [51, 250, 'Facial'],
       [85, 272, 'Service'],
       [115, 272, '13.513.515'],
-      [167, 272, '45%'],
+      [nominalBenefit ? 158 : 167, 272, nominalBenefit ? '6.081.083' : '45%'],
       [208, 272, '5'],
       [45, 210, 'Thank you'],
     ];
@@ -92,7 +92,10 @@ export function ocrReceiptPdf(withBenefits = false) {
       ctx.lineTo(228, 792 - y);
       ctx.stroke();
     }
-    for (const [x, y, text] of replacement) ctx.fillText(text, x, 792 - y);
+    for (const [x, y, text] of replacement) {
+      ctx.font = text === '6.081.083' ? '8px Times New Roman' : '9px Times New Roman';
+      ctx.fillText(text, x, 792 - y);
+    }
   }
   const jpeg = canvas.toBuffer('image/jpeg');
   const content = Buffer.from('q 612 0 0 792 0 0 cm /Im1 Do Q');

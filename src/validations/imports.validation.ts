@@ -20,7 +20,9 @@ export const previewQuerySchema = z.object({
   rowId: z.string().max(100).optional(),
 });
 export type PreviewQuery = z.output<typeof previewQuerySchema>;
-export const reparseBodySchema = z.object({ version: z.number().int().positive() }).strict();
+export const reparseBodySchema = z
+  .object({ version: z.number().int().positive(), resetReview: z.boolean().optional() })
+  .strict();
 
 export const reviewBodySchema = z.object({
   version: z.number().int().positive(),
@@ -49,10 +51,15 @@ export const packageReviewBodySchema = z.object({
             .min(0)
             .max(2147483647)
             .refine(validUnitPrice, 'Harga unit maksimal 6 desimal.'),
-          discountPercent: z.number().min(0).max(100),
+          discountPercent: z.number().min(0).max(100).optional(),
+          discountAmount: nominal.optional(),
           tax: nominal.optional(),
           taxPercent: z.number().min(0).max(100).optional(),
         })
+        .refine(
+          (item) => (item.discountAmount === undefined) !== (item.discountPercent === undefined),
+          'Pilih diskon persen atau nominal.',
+        )
         .refine(
           (item) => (item.tax === undefined) !== (item.taxPercent === undefined),
           'Isi pajak persen atau nominal, pilih satu.',
@@ -62,7 +69,12 @@ export const packageReviewBodySchema = z.object({
     .max(100),
 });
 
-export const reviewedBodySchema = z.object({ version: z.number().int().positive() });
+export const reviewedBodySchema = z
+  .object({
+    version: z.number().int().positive(),
+    exceptionReason: z.string().trim().min(10).max(1000).optional(),
+  })
+  .strict();
 
 export const removeFileBodySchema = z.object({ version: z.number().int().positive() });
 
@@ -78,11 +90,16 @@ export const addItemBodySchema = z
       .min(0)
       .max(2147483647)
       .refine(validUnitPrice, 'Harga unit maksimal 6 desimal.'),
-    discountPercent: z.number().min(0).max(100),
+    discountPercent: z.number().min(0).max(100).optional(),
+    discountAmount: nominal.optional(),
     taxPercent: z.number().min(0).max(100),
     reason: z.string().trim().min(5).max(500),
   })
-  .strict();
+  .strict()
+  .refine(
+    (item) => (item.discountAmount === undefined) !== (item.discountPercent === undefined),
+    'Pilih diskon persen atau nominal.',
+  );
 
 export const removeItemBodySchema = z.object({ version: z.number().int().positive() }).strict();
 
@@ -97,11 +114,16 @@ export const correctItemBodySchema = z
       .max(2147483647)
       .refine(validUnitPrice, 'Harga unit maksimal 6 desimal.'),
     discountPercent: z.number().min(0).max(100).optional(),
+    discountAmount: nominal.optional(),
     tax: nominal.optional(),
     taxPercent: z.number().min(0).max(100).optional(),
     reason: z.string().trim().min(5).max(500),
   })
   .strict()
+  .refine(
+    (item) => item.discountAmount === undefined || item.discountPercent === undefined,
+    'Pilih diskon persen atau nominal.',
+  )
   .refine(
     (item) => item.tax === undefined || item.taxPercent === undefined,
     'Isi pajak persen atau nominal, pilih satu.',

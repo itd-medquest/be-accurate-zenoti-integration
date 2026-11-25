@@ -1880,3 +1880,187 @@ afterDatabase(async () => {
     await closeTestDatabases();
   }
 });
+
+test('nominal discount API inputs preserve source totals and reject dual or excessive discount values', async () => {
+  const uuid = randomUUID();
+  const data = Buffer.from(
+    receiptPdf().toString('latin1').replaceAll('11111111-1111-4111-8111-111111111111', uuid),
+    'latin1',
+  );
+  let batch = await (await uploadFiles([{ name: 'nominal-input.pdf', data }])).json();
+  const row = batch.rows[0],
+    original = row.candidate.items[0];
+  const endpoint = `/imports/${batch.id}/rows/${row.id}/items/${encodeURIComponent(original.id)}`;
+  const fields = {
+    version: batch.version,
+    name: original.name,
+    quantity: original.quantity,
+    unitPrice: original.unitPrice,
+    discountAmount: original.discount,
+    reason: 'Confirmed nominal source discount',
+  };
+  assert.equal((await request(endpoint, 'viewer', 'PATCH', fields)).status, 403);
+  assert.equal(
+    (await request(endpoint, 'finance', 'PATCH', { ...fields, discountPercent: 70 })).status,
+    400,
+  );
+  assert.equal(
+    (
+      await request(endpoint, 'finance', 'PATCH', {
+        ...fields,
+        discountAmount: original.quantity * original.unitPrice + 1,
+      })
+    ).status,
+    422,
+  );
+  const result = await request(endpoint, 'finance', 'PATCH', fields);
+  assert.equal(result.status, 200, await result.clone().text());
+  batch = await result.json();
+  assert.equal(batch.rows[0].candidate.items[0].discount, original.discount);
+  assert.equal(batch.rows[0].candidate.items[0].discountPercent, undefined);
+  assert.equal(batch.rows[0].candidate.total, row.candidate.total);
+  assert.deepEqual(batch.rows[0].errors, []);
+});
+
+test('package extraction exceptions require a reason, exact financials, authorization and a current audited review', async () => {
+  const { importRows } = await import('../src/db/schema/index.js');
+  const uuid = randomUUID();
+  const data = Buffer.from(
+    receiptPdf()
+      .toString('latin1')
+      .replaceAll('11111111-1111-4111-8111-111111111111', uuid)
+      .replaceAll('TEST-RECEIPT-001', 'SPECIAL-' + uuid.slice(0, 12)),
+    'latin1',
+  );
+  let batch = await (await uploadFiles([{ name: 'special-package.pdf', data }])).json();
+  const row = batch.rows[0];
+  const parserError =
+    'Rincian tabel Benefit belum terbaca lengkap. Lengkapi semua layanan sesuai dokumen sumber.';
+  const candidate = { ...row.candidate, businessStatus: 'CLOSED', errors: [parserError] };
+  await db.update(importRows).set({ candidate }).where(eq(importRows.id, row.id));
+  const endpoint = `/imports/${batch.id}/rows/${row.id}/reviewed`;
+  const input = {
+    version: batch.version,
+    exceptionReason: 'Source detail reconciled and verified against the original document',
+  };
+  assert.equal((await request(endpoint, 'viewer', 'PATCH', input)).status, 403);
+  assert.equal(
+    (await request(endpoint, 'finance', 'PATCH', { ...input, exceptionReason: 'short' })).status,
+    400,
+  );
+  const modified = {
+    ...candidate,
+    items: candidate.items.map((item: { tax: number }, index: number) =>
+      index === 0 ? { ...item, tax: item.tax + 1 } : item,
+    ),
+  };
+  await db.update(importRows).set({ candidate: modified }).where(eq(importRows.id, row.id));
+  assert.equal((await request(endpoint, 'finance', 'PATCH', input)).status, 422);
+  await db.update(importRows).set({ candidate }).where(eq(importRows.id, row.id));
+  const approved = await request(endpoint, 'finance', 'PATCH', input);
+  assert.equal(approved.status, 200, await approved.clone().text());
+  batch = await approved.json();
+  assert.deepEqual(batch.rows[0].errors, []);
+  assert.equal(batch.rows[0].exceptionReview.accepted, true);
+  assert.deepEqual(batch.rows[0].candidate.errors, [parserError]);
+  assert.equal(batch.rows[0].candidate.reviewException.actorId, 'finance');
+  assert.equal(batch.rows[0].candidate.reviewException.reason, input.exceptionReason);
+  assert.equal((await request(endpoint, 'finance', 'PATCH', input)).status, 409);
+  const logs = await db
+    .select()
+    .from(auditLogs)
+    .where(eq(auditLogs.action, 'import.exception.review'));
+  assert.ok(logs.some((event) => event.entityId === batch.id));
+  const current = batch.rows[0].candidate,
+    first = current.items[0];
+  const edit = await request(
+    `/imports/${batch.id}/rows/${row.id}/items/${encodeURIComponent(first.id)}`,
+    'finance',
+    'PATCH',
+    {
+      version: batch.version,
+      name: first.name + ' corrected',
+      quantity: first.quantity,
+      unitPrice: first.unitPrice,
+      reason: 'Treatment wording checked against source',
+    },
+  );
+  assert.equal(edit.status, 200, await edit.clone().text());
+  batch = await edit.json();
+  assert.equal(batch.rows[0].exceptionReview.accepted, false);
+  assert.equal(batch.rows[0].candidate.reviewException, undefined);
+  assert.ok(batch.rows[0].errors.includes(parserError));
+  const acceptedAgain = await request(endpoint, 'finance', 'PATCH', {
+    ...input,
+    version: batch.version,
+  });
+  assert.equal(acceptedAgain.status, 200, await acceptedAgain.clone().text());
+  batch = await acceptedAgain.json();
+  const submitted = await request(`/imports/${batch.id}/submit`, 'finance', 'POST', {
+    version: batch.version,
+    rowIds: [row.id],
+    accountingReviewed: true,
+  });
+  assert.equal(submitted.status, 200, await submitted.clone().text());
+  assert.ok(
+    (await db.select().from(auditLogs).where(eq(auditLogs.action, 'import.exception.submit'))).some(
+      (event) => event.entityId === batch.id,
+    ),
+  );
+});
+
+test('re-reading recoverable package drafts requires explicit reset and preserves prior rows and the source file', async () => {
+  const { importRows } = await import('../src/db/schema/index.js');
+  const uuid = randomUUID();
+  const data = Buffer.from(
+    receiptPdf().toString('latin1').replaceAll('11111111-1111-4111-8111-111111111111', uuid),
+    'latin1',
+  );
+  let batch = await (await uploadFiles([{ name: 'legacy-benefit.pdf', data }])).json();
+  const row = batch.rows[0];
+  await db
+    .update(importRows)
+    .set({
+      candidate: {
+        ...row.candidate,
+        accountingReviewedAt: new Date().toISOString(),
+        errors: ['Manfaat paket tidak dapat dipasangkan secara pasti ke item utama.'],
+      },
+    })
+    .where(eq(importRows.id, row.id));
+  const endpoint = `/imports/${batch.id}/files/${batch.files[0].id}/reparse`;
+  assert.equal(
+    (await request(endpoint, 'viewer', 'POST', { version: batch.version, resetReview: true }))
+      .status,
+    403,
+  );
+  assert.equal(
+    (await request(endpoint, 'finance', 'POST', { version: batch.version })).status,
+    409,
+  );
+  const reread = await request(endpoint, 'finance', 'POST', {
+    version: batch.version,
+    resetReview: true,
+  });
+  assert.equal(reread.status, 200, await reread.clone().text());
+  batch = await reread.json();
+  assert.notEqual(batch.rows[0].id, row.id);
+  assert.deepEqual(batch.rows[0].errors, []);
+  assert.equal(batch.rows[0].candidate.accountingReviewedAt, undefined);
+  const [retained] = await db.select().from(importRows).where(eq(importRows.id, row.id));
+  assert.equal(retained.status, 'DELETED');
+  assert.ok(retained.candidate.accountingReviewedAt);
+  assert.deepEqual(
+    Buffer.from(
+      await (
+        await request(`/imports/${batch.id}/files/${batch.files[0].id}`, 'finance')
+      ).arrayBuffer(),
+    ),
+    data,
+  );
+  assert.equal(
+    (await request(endpoint, 'finance', 'POST', { version: batch.version, resetReview: true }))
+      .status,
+    409,
+  );
+});

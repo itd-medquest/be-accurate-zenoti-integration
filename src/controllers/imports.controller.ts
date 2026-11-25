@@ -64,6 +64,7 @@ export const reparse: RequestHandler = async (req, res) => {
         String(req.params.fileId),
         input.version,
         req.actor.id,
+        input.resetReview,
       ),
     );
   } finally {
@@ -135,6 +136,7 @@ export const reviewed: RequestHandler = async (req, res) => {
       String(req.params.rowId),
       body.version,
       req.actor.id,
+      body.exceptionReason,
     ),
   );
 };

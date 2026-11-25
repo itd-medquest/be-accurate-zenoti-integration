@@ -8,7 +8,7 @@ import {
 import {
   calculatePackage as browserCalculate,
   calculateItemCorrection as browserCorrect,
-} from '../../frontend/src/features/invoices/utils/package-calculation.js';
+} from '../../frontend/src/features/easyrecap/invoices/utils/package-calculation.js';
 
 test('manual percentage calculations stay finite for arbitrary integer prices and keep FE/BE equal', () => {
   for (const price of [2382321, 13513515, 1, 0, 2702703]) {
@@ -131,4 +131,31 @@ test('untouched edit rates preserve source allocations and rounded package metad
     calculateItemCorrection(allocated, { quantity: 1, unitPrice: 450450, tax: 11, taxPercent: 11 }),
     null,
   );
+});
+
+test('nominal item corrections are exact and FE/BE agree without persisting an approximate percentage', () => {
+  const original = { quantity: 1, unitPrice: 1801802, discount: 0, tax: 19721 };
+  const input = { quantity: 1, unitPrice: 1801802, discountAmount: 1622523, taxPercent: 11 };
+  const result = calculateItemCorrection(original, input)!;
+  assert.equal(result.discount, 1622523);
+  assert.equal(result.discountPercent, undefined);
+  assert.equal(result.tax, 19721);
+  assert.deepEqual(result, browserCorrect(original, input));
+  assert.equal(calculateItemCorrection(original, { ...input, discountPercent: 90 }), null);
+  assert.equal(calculateItemCorrection(original, { ...input, discountAmount: 1801803 }), null);
+});
+
+test('nominal source discounts are locked while percentage rows absorb bounded rounding', () => {
+  const lines = [
+    { name: 'A', quantity: 5, unitPrice: 900901, discountPercent: 80, taxPercent: 11 },
+    { name: 'B', quantity: 1, unitPrice: 1801802, discountAmount: 1622523, taxPercent: 11 },
+    { name: 'C', quantity: 5, unitPrice: 450450, discountPercent: 60, taxPercent: 11 },
+  ];
+  const result = calculatePackage(lines, 1981081, 217919)!;
+  assert.equal(result.matches, true);
+  assert.equal(result.items[1].discount, 1622523);
+  assert.deepEqual(result, browserCalculate(lines, 1981081, 217919));
+  const onlyNominal = [{ name: 'A', quantity: 1, unitPrice: 1000, discountAmount: 100, tax: 0 }];
+  assert.equal(calculatePackage(onlyNominal, 901, 0)?.matches, false);
+  assert.equal(calculatePackage(onlyNominal, 900, 0)?.matches, true);
 });

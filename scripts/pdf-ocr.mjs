@@ -205,18 +205,47 @@ export async function createPdfOcr() {
       const typeHeader = result.tokens.find(
         (t) => /^Type$/i.test(t.text) && benefitHeader && Math.abs(t.y - benefitHeader.y) < 8,
       );
+      const discountHeader = result.tokens.find(
+        (t) => /^Discount/i.test(t.text) && benefitHeader && Math.abs(t.y - benefitHeader.y) < 18,
+      );
+      const benefitCountHeader = result.tokens.find(
+        (t) => /benefits/i.test(t.text) && benefitHeader && Math.abs(t.y - benefitHeader.y) < 18,
+      );
       const benefitRows = [];
       let benefitTableComplete = true;
       if (benefitHeader && typeHeader) {
         const percentages = result.tokens
           .filter(
             (t) =>
-              /^\d+(?:[.,]\d+)?%$/.test(t.text) &&
+              (/^\d+(?:[.,]\d+)?%$/.test(t.text) ||
+                (discountHeader && benefitCountHeader && /^\d[\d.]*$/.test(t.text))) &&
               t.y < benefitHeader.y - 8 &&
-              t.x > typeHeader.x &&
-              t.x < typeHeader.x + 130,
+              t.x > (discountHeader ? discountHeader.x - 12 : typeHeader.x) &&
+              t.x <
+                (discountHeader && benefitCountHeader
+                  ? (discountHeader.x + benefitCountHeader.x) / 2
+                  : typeHeader.x + 130),
           )
           .sort((a, b) => b.y - a.y);
+        // OCR may merge Price and a nominal Discount into one token. Type cells
+        // still identify the rows; read the discount directly from its grid cell.
+        if (discountHeader && benefitCountHeader) {
+          for (const cell of result.tokens.filter(
+            (token) =>
+              /^(Service|Product)(?:\s|\d|$)/i.test(token.text) &&
+              Math.abs(token.x - typeHeader.x) < 18 &&
+              token.y < benefitHeader.y - 8,
+          )) {
+            if (!percentages.some((token) => Math.abs(token.y - cell.y) < 4))
+              percentages.push({
+                ...cell,
+                text: '',
+                x: discountHeader.x,
+                width: discountHeader.width,
+              });
+          }
+          percentages.sort((a, b) => b.y - a.y);
+        }
         const thank = result.tokens.find(
           (t) =>
             /^Thank$/i.test(t.text) &&
@@ -301,6 +330,21 @@ export async function createPdfOcr() {
             PSM.SINGLE_LINE,
             true,
           );
+          const discountText =
+            pct.text ||
+            (
+              await recognize(
+                {
+                  left: (gridX[3] ?? discountHeader.x - 4) + 1.5,
+                  right: (gridX[4] ?? benefitCountHeader.x - 3) - 1.5,
+                  top: pct.y + 10,
+                  bottom: pct.y - 4,
+                },
+                PSM.SINGLE_LINE,
+              )
+            ).text
+              .replace(/\s/g, '')
+              .replace(/^[|()[\]{}]+|[|()[\]{}]+$/g, '');
           const quantity = await recognize(
             {
               left: (gridX[4] ?? pct.x + (pct.width ?? 17) + 12) + 1.5,
@@ -317,7 +361,13 @@ export async function createPdfOcr() {
             .join(' ');
           const amountText = amount.text.replace(/\s|IDR|\./g, '');
           const qtyText = quantity.text.replace(/\s/g, '');
-          if (!name || !/^\d+$/.test(amountText) || !/^\d+$/.test(qtyText) || Number(qtyText) < 1) {
+          if (
+            !name ||
+            !/^(?:\d+(?:[.,]\d+)?%|\d[\d.]*)$/.test(discountText) ||
+            !/^\d+$/.test(amountText) ||
+            !/^\d+$/.test(qtyText) ||
+            Number(qtyText) < 1
+          ) {
             benefitTableComplete = false;
             continue;
           }
@@ -325,7 +375,9 @@ export async function createPdfOcr() {
             name,
             price: Number(amountText),
             quantity: Number(qtyText),
-            discountPercent: Number(pct.text.replace('%', '').replace(',', '.')),
+            ...(/%$/.test(discountText)
+              ? { discountPercent: Number(discountText.replace('%', '').replace(',', '.')) }
+              : { discountAmount: Number(discountText.replaceAll('.', '')) }),
           });
         }
       }
