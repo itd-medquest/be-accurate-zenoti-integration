@@ -559,19 +559,32 @@ function parseGroup(pages: PdfPage[]): ImportCandidate {
       );
   }
   const paymentBoundary = tokens.find((t) => /Tax Based on Collection/i.test(t.text));
-  for (const row of rows(
-    tokens.filter((t) => t.y < header.y - 5 && t.y > (paymentBoundary?.y ?? subtotalLabel.y)),
-  )) {
+  const paymentTokens = tokens.filter(
+    (t) => t.y < header.y - 5 && t.y > (paymentBoundary?.y ?? subtotalLabel.y),
+  );
+  const paymentRows = rows(paymentTokens).flatMap((row) => {
     const paidOn = row.tokens.find(
       (t) => /^\d{2}\/\d{2}\/\d{4}(?:\s+\d[\d.]*(?:,00)?)?$/.test(t.text) && t.x > split,
     );
     const amount = row.tokens.find((t) => t.x > split + 50 && /^(?:IDR)?\d[\d.]*$/.test(t.text));
     const mergedPayment = paidOn?.text.match(/^(\d{2}\/\d{2}\/\d{4})\s+(\d[\d.]*(?:,00)?)$/);
     const amountText = amount?.text ?? mergedPayment?.[2];
-    if (!paidOn || !amountText) continue;
+    return paidOn && amountText ? [{ row, paidOn, amountText, mergedPayment }] : [];
+  });
+  for (const { row, paidOn, amountText, mergedPayment } of paymentRows) {
     const method = clean(
-      row.tokens
-        .filter((t) => t.x >= split && t.x < paidOn.x)
+      paymentTokens
+        // Wrapped labels belong to the nearest dated payment, never a neighbouring payment.
+        .filter(
+          (t) =>
+            t.x >= split &&
+            t.x < paidOn.x &&
+            Math.abs(t.y - row.y) <= 12 &&
+            paymentRows.every(
+              (other) => other.row === row || Math.abs(t.y - row.y) < Math.abs(t.y - other.row.y),
+            ),
+        )
+        .sort((a, b) => b.y - a.y || a.x - b.x)
         .map((t) => t.text)
         .join(' '),
     );
@@ -583,7 +596,9 @@ function parseGroup(pages: PdfPage[]): ImportCandidate {
           ? 'cash'
           : /card|visa|master|debit|credit/i.test(method)
             ? 'card'
-            : 'other',
+            : /bank|transfer/i.test(method)
+              ? 'bank'
+              : 'other',
       amount: rupiah(amountText),
       paidAt: `${sourceDate(mergedPayment?.[1] ?? paidOn.text)}T00:00:00+07:00`,
     });

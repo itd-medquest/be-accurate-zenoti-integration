@@ -11,6 +11,7 @@ export const receiptReferenceQuery = z
   .strict();
 
 const date = z.iso.date();
+const bankRate = z.number().int().min(0).max(9999);
 export const receiptFilters = z
   .object({
     search: z.string().trim().max(100).default(''),
@@ -24,6 +25,7 @@ export const receiptFilters = z
         'QUEUED',
         'SENDING',
         'SUCCEEDED',
+        'PARTIAL',
         'NEEDS_REVIEW',
       ])
       .default(''),
@@ -55,6 +57,7 @@ export const receiptMappingInput = createInsertSchema(receiptAccountMappings)
     accountId: z.string().regex(/^\d+$/).max(30),
     feeAccountId: z.string().regex(/^\d+$/).max(30).nullable(),
     version: z.number().int().nonnegative(),
+    rateBps: bankRate.optional(),
   })
   .strict();
 export const receiptPrepareInput = z
@@ -81,6 +84,9 @@ export const receiptDraftInput = createInsertSchema(accurateReceipts)
       )
       .optional(),
     version: z.number().int().positive(),
+    amountMode: z.enum(['FULL', 'NET', 'GROSS']).optional(),
+    inputAmount: z.number().int().positive().max(2147483647).optional(),
+    rateOverrideBps: bankRate.nullable().optional(),
   })
   .strict();
 export const receiptSubmitInput = z

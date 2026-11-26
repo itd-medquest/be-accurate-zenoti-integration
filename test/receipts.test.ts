@@ -288,6 +288,8 @@ test('account mappings are scoped, verified, versioned and require a fee account
   };
   assert.equal((await request('/mappings', 'PUT', { ...body, feeAccountId: null })).status, 422);
   assert.equal((await request('/mappings', 'PUT', { ...body, accountId: '201' })).status, 422);
+  for (const rateBps of [-1, 10000, 1.5, '180'])
+    assert.equal((await request('/mappings', 'PUT', { ...body, rateBps })).status, 400);
   const response = await request('/mappings', 'PUT', body);
   assert.equal(response.status, 200);
   mappingId = (await response.json()).id;
@@ -329,6 +331,7 @@ test('processing overview combines queued and sending receipts without changing 
         ...original,
         id: addedIds[index],
         sourceKey: (index === 0 ? 'b' : 'c').repeat(64),
+        paymentSourceKey: null,
         number: `PROCESSING-${status}`,
         status,
       })),
@@ -400,6 +403,22 @@ test('draft save calculates approved fees server-side and rejects stale versions
 });
 
 test('submission rejects stale versions and never queues an unreviewed request', async () => {
+  for (const rateOverrideBps of [-1, 10000, 1.5, '180']) {
+    assert.equal(
+      (
+        await request('/' + draftId, 'PUT', {
+          mappingId,
+          mappingVersion: 1,
+          version: 2,
+          paymentDate: '2026-11-01',
+          paymentReference: 'REF-RATE',
+          notes: '',
+          rateOverrideBps,
+        })
+      ).status,
+      400,
+    );
+  }
   assert.equal(
     (await request('/' + draftId + '/submit', 'POST', { version: 2, confirmed: false }, 'finance'))
       .status,

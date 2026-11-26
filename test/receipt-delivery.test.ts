@@ -229,6 +229,7 @@ async function fixture(
   split = false,
   format: 'PDF' | 'XLSX' = 'PDF',
   documentReceipt?: string,
+  paymentSpecs?: { method: 'qris' | 'card' | 'bank'; amount: number }[],
 ) {
   mode = 'normal';
   const branchId = randomUUID(),
@@ -236,18 +237,19 @@ async function fixture(
     targetId = String(++serial),
     number = 'INV-' + serial,
     receiptNumber = documentReceipt ?? 'RECEIPT-' + serial;
-  const payments = Array.from({ length: split ? 2 : 1 }, (_, index) => ({
+  const payments = Array.from({ length: paymentSpecs?.length ?? (split ? 2 : 1) }, (_, index) => ({
     id:
       format === 'PDF'
         ? `${id}:receipt:${receiptNumber}:${index + 1}`
         : `${id}:item-${index}:collection`,
     method:
-      method === 'QRIS'
+      paymentSpecs?.[index].method ??
+      (method === 'QRIS'
         ? ('qris' as const)
         : method === 'BANK_TRANSFER'
           ? ('bank' as const)
-          : ('card' as const),
-    amount: 200001,
+          : ('card' as const)),
+    amount: paymentSpecs?.[index].amount ?? 200001,
     paidAt: '2026-11-01T00:00:00+07:00',
   }));
   const total = payments.reduce((sum, p) => sum + p.amount, 0);
@@ -543,12 +545,19 @@ test('concurrent submits and workers use the source receipt number and send the 
   assert.equal((await stored(drafts[0].id)).status, 'SUCCEEDED');
 });
 
-test('separate source payments require manual handling before any draft or financial write', async () => {
-  const { id, sourceKeys } = await fixture('QRIS', true),
+test('separate source payments prepare independent drafts and invoice-wide receipt suffixes without a financial write', async () => {
+  const { id, sourceKeys, receiptNumber } = await fixture('QRIS', true),
     initial = writes;
   const before = (await db.select().from(schema.accurateReceipts)).length;
+  const drafts = [];
   for (const sourceKey of sourceKeys)
-    await assert.rejects(draftService.prepareReceipt(id, sourceKey, actorId), /ditangani manual/);
+    drafts.push(await draftService.prepareReceipt(id, sourceKey, actorId));
+  assert.deepEqual(
+    drafts.map((row) => row.number),
+    [receiptNumber, receiptNumber + '-A'],
+  );
+  assert.notEqual(drafts[0].id, drafts[1].id);
+  assert.equal((await draftService.prepareReceipt(id, sourceKeys[1], actorId)).id, drafts[1].id);
   const overview = await draftService.receiptOverview({
     search: '',
     branch: '',
@@ -559,9 +568,10 @@ test('separate source payments require manual handling before any draft or finan
     pageSize: 50,
   });
   const row = overview.items.find((row) => row.invoiceId === id);
-  assert.equal(row?.status, 'NEEDS_REVIEW');
-  assert.match(row?.error ?? '', /ditangani manual/);
-  assert.equal((await db.select().from(schema.accurateReceipts)).length, before);
+  assert.equal(row?.status, 'DRAFT');
+  assert.equal(row?.paymentCount, 2);
+  assert.equal(overview.items.filter((row) => row.invoiceId === id).length, 1);
+  assert.equal((await db.select().from(schema.accurateReceipts)).length, before + 2);
   assert.equal(writes, initial);
 });
 
@@ -837,6 +847,268 @@ test('operator suspension after enqueue prevents the attempt before a POST', asy
     await db.update(schema.user).set({ active: true }).where(eq(schema.user.id, actorId));
   }
 });
+
+async function saveStage(
+  row: Awaited<ReturnType<typeof fixture>>['drafts'][number],
+  mappingId: string,
+  amounts: { amountMode: 'FULL' | 'NET' | 'GROSS'; inputAmount?: number },
+) {
+  return draftService.saveReceiptDraft(
+    row.id,
+    {
+      mappingId,
+      mappingVersion: 1,
+      paymentDate: '2026-11-01',
+      paymentReference: 'REF-' + row.id,
+      notes: 'Bank settlement',
+      version: row.version,
+      ...amounts,
+    },
+    actorId,
+  );
+}
+
+test('net partial settlement preserves source, reconciles uncertain writes, and settles the remaining receivable through immutable stages', async () => {
+  const f = await fixture();
+  const sourceBefore = (
+    await db.select().from(schema.invoices).where(eq(schema.invoices.id, f.id))
+  )[0];
+  const first = await saveStage(f.drafts[0], f.mappingId, {
+    amountMode: 'NET',
+    inputAmount: 99300,
+  });
+  assert.equal(first.grossAmount, 100000);
+  assert.equal(first.feeAmount, 700);
+  assert.equal(first.netAmount, 99300);
+  const initial = writes;
+  await enqueue(first);
+  mode = 'timeout-after';
+  await delivery.processOneReceipt();
+  assert.equal((await stored(first.id)).status, 'NEEDS_REVIEW');
+  assert.equal((await draftService.prepareReceipt(f.id, f.sourceKeys[0], actorId)).id, first.id);
+  assert.equal((await stored(first.id)).number, f.receiptNumber);
+  mode = 'normal';
+  await delivery.checkReceipt(first.id, actorId);
+  assert.equal((await stored(first.id)).status, 'SUCCEEDED');
+  assert.equal(writes, initial + 1);
+  assert.equal(invoices.get(f.targetId)?.owing, 100001);
+  const progress = await draftService.receiptDetail(first.id);
+  assert.equal(progress.actions.canContinue, true);
+  assert.equal(progress.settlement.invoiceRemaining, 100001);
+  const overview = await draftService.receiptOverview({
+    search: f.number,
+    branch: '',
+    status: 'PARTIAL',
+    page: 1,
+    pageSize: 25,
+  });
+  assert.equal(overview.total, 1);
+  assert.equal(overview.items[0].status, 'PARTIAL');
+  assert.equal(overview.summary.partial, 1);
+  assert.equal(overview.summary.succeeded, 0);
+  await assert.rejects(
+    saveStage(await stored(first.id), f.mappingId, { amountMode: 'FULL' }),
+    /sudah dikirim/,
+  );
+  const continuations = await Promise.all([
+    draftService.prepareReceipt(f.id, f.sourceKeys[0], actorId),
+    draftService.prepareReceipt(f.id, f.sourceKeys[0], actorId),
+  ]);
+  assert.equal(continuations[0].id, continuations[1].id);
+  const secondDraft = continuations[0];
+  assert.equal(secondDraft.number, f.receiptNumber + '-A');
+  await assert.rejects(
+    saveStage(secondDraft, f.mappingId, { amountMode: 'GROSS', inputAmount: 100002 }),
+    /melebihi/,
+  );
+  await assert.rejects(
+    saveStage(secondDraft, f.mappingId, { amountMode: 'NET', inputAmount: 100001 }),
+    /melebihi/,
+  );
+  const second = await saveStage(secondDraft, f.mappingId, {
+    amountMode: 'GROSS',
+    inputAmount: 40000,
+  });
+  await enqueue(second);
+  await delivery.processOneReceipt();
+  assert.equal((await stored(second.id)).status, 'SUCCEEDED');
+  const thirdDraft = await draftService.prepareReceipt(f.id, f.sourceKeys[0], actorId);
+  assert.equal(thirdDraft.number, f.receiptNumber + '-B');
+  const third = await saveStage(thirdDraft, f.mappingId, { amountMode: 'NET', inputAmount: 59580 });
+  assert.equal(third.grossAmount, 60001);
+  assert.equal(third.feeAmount, 421);
+  await enqueue(third);
+  await delivery.processOneReceipt();
+  assert.equal((await stored(third.id)).status, 'SUCCEEDED');
+  assert.equal(invoices.get(f.targetId)?.owing, 0);
+  const finished = await draftService.receiptDetail(third.id);
+  assert.equal(finished.actions.canContinue, false);
+  assert.equal(finished.settlement.remaining, 0);
+  assert.equal(finished.settlement.invoiceRemaining, 0);
+  assert.equal(
+    finished.settlement.history.reduce((sum, row) => sum + row.fee, 0),
+    1401,
+  );
+  assert.equal((await draftService.prepareReceipt(f.id, f.sourceKeys[0], actorId)).id, third.id);
+  const sourceAfter = (
+    await db.select().from(schema.invoices).where(eq(schema.invoices.id, f.id))
+  )[0];
+  assert.deepEqual(sourceAfter.payments, sourceBefore.payments);
+  assert.equal(sourceAfter.total, sourceBefore.total);
+  await db
+    .update(schema.invoices)
+    .set({
+      payments: sourceAfter.payments.map((payment) => ({ ...payment, amount: payment.amount + 1 })),
+    })
+    .where(eq(schema.invoices.id, f.id));
+  const held = await draftService.receiptDetail(third.id);
+  assert.equal(held.validation.editable, false);
+  assert.equal(held.settlement.history.length, 3);
+  assert.equal(held.source.gross, sourceBefore.total);
+  assert.deepEqual(
+    held.settlement.history.map((row) => row.number),
+    [f.receiptNumber, f.receiptNumber + '-A', f.receiptNumber + '-B'],
+  );
+});
+
+test('two card/transfer source payments clear one invoice with distinct mappings, suffixes and no premature success', async () => {
+  const f = await fixture('CREDIT_CARD', true, 'PDF', undefined, [
+    { method: 'card', amount: 1990000 },
+    { method: 'bank', amount: 9000 },
+  ]);
+  const [originalMapping] = await db
+    .select()
+    .from(schema.receiptAccountMappings)
+    .where(eq(schema.receiptAccountMappings.id, f.mappingId));
+  const bankMappingId = randomUUID();
+  await db.insert(schema.receiptAccountMappings).values({
+    ...originalMapping,
+    id: bankMappingId,
+    method: 'BANK_TRANSFER',
+    feeAccountId: null,
+    feeAccountNo: null,
+    feeAccountName: null,
+  });
+  const first = await saveStage(
+    await draftService.prepareReceipt(f.id, f.sourceKeys[0], actorId),
+    f.mappingId,
+    { amountMode: 'FULL' },
+  );
+  await enqueue(first);
+  await delivery.processOneReceipt();
+  assert.equal((await stored(first.id)).status, 'SUCCEEDED');
+  assert.equal(invoices.get(f.targetId)?.owing, 9000);
+  const detail = await draftService.receiptDetail(first.id);
+  assert.equal(detail.settlement.payments.length, 2);
+  assert.equal(detail.settlement.invoiceRemaining, 9000);
+  const overview = await draftService.receiptOverview({
+    search: f.number,
+    branch: '',
+    status: '',
+    page: 1,
+    pageSize: 25,
+  });
+  assert.equal(overview.items.length, 1);
+  assert.equal(overview.items[0].status, 'PARTIAL');
+  assert.equal(overview.items[0].draft, null);
+  const next = await draftService.prepareReceipt(f.id, f.sourceKeys[1], actorId);
+  assert.equal(next.number, f.receiptNumber + '-A');
+  await assert.rejects(saveStage(next, f.mappingId, { amountMode: 'FULL' }), /tidak cocok/);
+  const second = await saveStage(next, bankMappingId, { amountMode: 'NET', inputAmount: 9000 });
+  assert.equal(second.feeAmount, 0);
+  assert.equal(second.netAmount, 9000);
+  await enqueue(second);
+  await delivery.processOneReceipt();
+  assert.equal((await stored(second.id)).status, 'SUCCEEDED');
+  assert.equal(invoices.get(f.targetId)?.owing, 0);
+  const final = await draftService.receiptOverview({
+    search: f.number,
+    branch: '',
+    status: 'SUCCEEDED',
+    page: 1,
+    pageSize: 25,
+  });
+  assert.equal(final.items.length, 1);
+  assert.equal(final.items[0].status, 'SUCCEEDED');
+});
+
+test('a disabled Accurate connection still blocks live receipt submission and worker delivery', async () => {
+  const { drafts } = await fixture();
+  const row = drafts[0];
+  const initialWrites = writes;
+  try {
+    await db
+      .update(schema.integrationConfigs)
+      .set({ enabled: false })
+      .where(eq(schema.integrationConfigs.id, 'accurate'));
+    await assert.rejects(enqueue(row), { status: 409 });
+    assert.equal((await stored(row.id)).status, 'DRAFT');
+    assert.equal((await stored(row.id)).attemptedAt, null);
+    await db
+      .update(schema.integrationConfigs)
+      .set({ enabled: true })
+      .where(eq(schema.integrationConfigs.id, 'accurate'));
+    await enqueue(row);
+    await db
+      .update(schema.integrationConfigs)
+      .set({ enabled: false })
+      .where(eq(schema.integrationConfigs.id, 'accurate'));
+    await delivery.processOneReceipt();
+    const held = await stored(row.id);
+    assert.equal(held.status, 'NEEDS_REVIEW');
+    assert.equal(held.attemptedAt, null);
+    assert.equal(writes, initialWrites);
+  } finally {
+    await db
+      .update(schema.integrationConfigs)
+      .set({ enabled: true })
+      .where(eq(schema.integrationConfigs.id, 'accurate'));
+  }
+});
+
+for (const override of [false, true]) {
+  test(`live delivery uses the saved ${override ? 'receipt override' : 'Settings default'} rate in its verified amounts`, async () => {
+    const { drafts, mappingId } = await fixture();
+    const row = drafts[0];
+    await db
+      .update(schema.receiptAccountMappings)
+      .set({ rateBps: 185, version: 2 })
+      .where(eq(schema.receiptAccountMappings.id, mappingId));
+    const saved = await draftService.saveReceiptDraft(
+      row.id,
+      {
+        mappingId,
+        mappingVersion: 2,
+        version: row.version,
+        paymentDate: row.paymentDate,
+        paymentReference: row.paymentReference,
+        notes: row.notes,
+        ...(override ? { rateOverrideBps: 180 } : {}),
+      },
+      actorId,
+    );
+    assert.equal(saved.rateBps, override ? 180 : 185);
+    assert.equal(saved.feeAmount, override ? 3601 : 3701);
+    assert.equal(saved.netAmount, override ? 196400 : 196300);
+    const initialWrites = writes;
+    await enqueue(saved);
+    await delivery.processOneReceipt();
+    const completed = await stored(saved.id);
+    assert.equal(completed.status, 'SUCCEEDED', completed.error ?? '');
+    assert.equal(completed.payload?.chequeAmount, saved.netAmount);
+    assert.equal(completed.payload?.detailInvoice[0].detailDiscount?.[0].amount, saved.feeAmount);
+    assert.equal(writes, initialWrites + 1);
+    assert.equal(
+      (
+        await db.query.receiptAccountMappings.findFirst({
+          where: eq(schema.receiptAccountMappings.id, mappingId),
+        })
+      )?.rateBps,
+      185,
+    );
+  });
+}
+
 test('contract parser rejects missing values and fractional amounts instead of treating them as zero', () => {
   assert.throws(() => readAccurateReceipt({}));
   const row = receiptData(

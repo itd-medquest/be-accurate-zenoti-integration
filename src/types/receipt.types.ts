@@ -10,6 +10,8 @@ export const receiptRates: Record<ReceiptMethod, number> = {
   QRIS: 70,
   BANK_TRANSFER: 0,
 };
+export const receiptMappingRate = (mapping: { rateBps?: number | null }, method: ReceiptMethod) =>
+  mapping.rateBps ?? receiptRates[method];
 export interface ReceiptAmounts {
   gross: number;
   rateBps: number;
@@ -43,6 +45,7 @@ export interface AccurateReceiptPayload {
 }
 
 export interface ReceiptVerification {
+  simulation?: true;
   invoiceId: string;
   customerId: string;
   currencyId: string;

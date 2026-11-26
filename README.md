@@ -13,7 +13,7 @@ Redeemed items and complimentary Consultation services are not sent to Accurate.
 
 ### Sales Receipts
 
-Payments from invoices with verified Accurate Sales Invoices can be reviewed, saved as drafts, and submitted after Finance confirmation. Settings provides cash/bank and expense account mappings for each company, bank, and payment method. BCA/BNI rates: credit card 2%, debit 1.8%, QRIS 0.7%, and direct bank transfer 0%; fractional fees are always rounded up. The receipt queue checks the latest balance and verifies results without repeating invoice delivery. Uncertain delivery results are reconciled through vendor reads. See the [receipt workflow, API contract, and UAT limitations](docs/sales-receipts.md).
+Payments from invoices with verified Accurate Sales Invoices can be reviewed, saved as drafts, and submitted after Finance confirmation. Settings provides cash/bank and expense account mappings and configurable default rates for each company, bank, and payment method. Initial BCA/BNI defaults are credit card 2%, debit 1.8%, QRIS 0.7%, and direct bank transfer 0%. Finance can override a draft receipt's rate without changing Settings; successful receipts retain their stored rates. Fractional fees are always rounded up. The receipt queue checks the latest balance and verifies results without repeating invoice delivery. Uncertain delivery results are reconciled through vendor reads. See the [receipt workflow, API contract, and UAT limitations](docs/sales-receipts.md).
 
 ### Creating Accurate Customers
 
@@ -99,7 +99,7 @@ Password recovery uses OTP through Resend and requires `RESEND_API_KEY` and a `R
 
 Source invoice files are stored privately in `data/imports`. Configure persistent storage for this directory during deployment and exclude it from Git.
 
-Super Admin can add and delete companies through **Settings → Companies**, then configure each company's Accurate connection, destination, and receipt accounts. Each new company uses its own credentials; deletion requires company-name confirmation and is rejected if the company has history. See the [company management guide](docs/company-management.md).
+Super Admin can add, rename, and delete companies through **Settings → Companies**, then configure each company's Accurate connection, destination, and receipt accounts. Each new company uses its own credentials. Deletion requires company-name confirmation and remains blocked by active uploads or transactions; deleted-only unsubmitted previews are retained for audit while the company is removed from selection. See the [company management guide](docs/company-management.md).
 
 ## Commands
 
@@ -161,3 +161,5 @@ Request flow: **route → validation → controller → service → repository �
 Create a branch for each change, include migrations when needed, run `npm run typecheck`, `npm test`, and `npm run build`, then open a pull request. Keep `package-lock.json` and migration history. Exclude local environments, credentials, databases, source documents, and build/test artifacts from commits.
 
 Package Benefit extraction, nominal/percentage discount requests, and audited review exceptions are documented in the [package review guide](docs/package-benefit-review.md).
+
+Multiple payments and partial bank settlements, including the required additive MySQL migration, are documented in the [partial receipts guide](docs/partial-receipts.md).

@@ -56,6 +56,16 @@ test('company management requires an admin and enforces typed confirmation on de
   const created = await request('/companies', 'super_admin', 'POST', { name: 'HTTP Company' });
   assert.equal(created.status, 201);
   const company = await created.json();
+  const rename = { name: '  HTTP   Company Updated  ', expectedName: company.name };
+  assert.equal((await request(`/companies/${company.id}`, undefined, 'PATCH', rename)).status, 401);
+  assert.equal((await request(`/companies/${company.id}`, 'finance', 'PATCH', rename)).status, 403);
+  assert.equal((await request(`/companies/${company.id}`, 'viewer', 'PATCH', rename)).status, 403);
+  assert.equal((await request(`/companies/${company.id}`, 'super_admin', 'PATCH', { ...rename, name: ' ' })).status, 400);
+  assert.equal((await request(`/companies/${company.id}`, 'super_admin', 'PATCH', { ...rename, active: false })).status, 400);
+  assert.equal((await request(`/companies/${company.id}`, 'super_admin', 'PATCH', { ...rename, name: 'x'.repeat(101) })).status, 400);
+  assert.equal((await request(`/companies/${company.id}`, 'super_admin', 'PATCH', rename)).status, 200);
+  assert.equal((await request(`/companies/${company.id}`, 'super_admin', 'PATCH', rename)).status, 409);
+  company.name = 'HTTP Company Updated';
   assert.equal((await request(`/companies/${company.id}`, 'finance', 'DELETE', { confirmationName: company.name })).status, 403);
   assert.equal((await request(`/companies/${company.id}`, 'super_admin', 'DELETE', { confirmationName: 'wrong' })).status, 400);
   const settings = await (await request(`/settings?branchId=${company.id}`, 'super_admin')).json();
@@ -2063,4 +2073,75 @@ test('re-reading recoverable package drafts requires explicit reset and preserve
       .status,
     409,
   );
+});
+
+
+test('uploaded simulated invoices continue through receipt review with a disabled Accurate connection and no vendor requests', async () => {
+  const schema = await import('../src/db/schema/index.js');
+  const receiptsService = await import('../src/services/receipts.service.js');
+  const receiptDelivery = await import('../src/services/receipt-delivery.service.js');
+  const oldFetch = globalThis.fetch;
+  let vendorCalls = 0;
+  globalThis.fetch = async (input, init) => {
+    if (new URL(String(input)).hostname.endsWith('.accurate.id')) {
+      vendorCalls++; throw new Error('Simulation tried to contact Accurate');
+    }
+    return oldFetch(input, init);
+  };
+  const [previous] = await db.select().from(integrationConfigs).where(eq(integrationConfigs.id, 'accurate'));
+  try {
+    await db.update(integrationConfigs).set({ enabled: true, encryptedSecret: encrypt(JSON.stringify({
+      version: 1, mode: 'simulation', apiToken: '', signatureSecret: '', taxPolicy: 'gross-no-tax',
+    })) }).where(eq(integrationConfigs.id, 'accurate'));
+    const uuid = randomUUID();
+    const source = Buffer.from(receiptPdf({ invoiceNumber: 'SIM-' + uuid.slice(0,8), receiptNumber: 'RC-SIM-' + uuid.slice(0,8) })
+      .toString('latin1').replaceAll('11111111-1111-4111-8111-111111111111', uuid), 'latin1');
+    const preview = z.object({ id: z.string(), version: z.number(), rows: z.array(z.object({ id: z.string() })) });
+    const uploaded = await uploadFiles([{ name: 'simulation-journey.pdf', data: source }]);
+    assert.equal(uploaded.status, 201, await uploaded.clone().text());
+    let batch = preview.parse(await uploaded.json());
+    const rowId = batch.rows[0].id;
+    const reviewed = await request('/imports/' + batch.id + '/rows/' + rowId, 'finance', 'PATCH', { version: batch.version, businessStatus: 'CLOSED' });
+    assert.equal(reviewed.status, 200, await reviewed.clone().text());
+    batch = preview.parse(await reviewed.json());
+    const confirmed = await request('/imports/' + batch.id + '/rows/' + rowId + '/reviewed', 'finance', 'PATCH', { version: batch.version });
+    assert.equal(confirmed.status, 200, await confirmed.clone().text());
+    batch = preview.parse(await confirmed.json());
+    const submitted = await request('/imports/' + batch.id + '/submit', 'finance', 'POST', { version: batch.version, rowIds: [rowId], accountingReviewed: true });
+    assert.equal(submitted.status, 200, await submitted.clone().text());
+    let invoice = await db.query.invoices.findFirst({ where: eq(invoices.sourceId, uuid) });
+    assert.ok(invoice);
+    for (let tick = 0; tick < 100 && invoice.syncStatus !== 'SYNCED'; tick++) {
+      await processOne();
+      const updated = await db.query.invoices.findFirst({ where: eq(invoices.id, invoice.id) });
+      assert.ok(updated); invoice = updated;
+    }
+    assert.equal(invoice.syncStatus, 'SYNCED');
+    await db.update(integrationConfigs).set({ enabled: false }).where(eq(integrationConfigs.id, 'accurate'));
+    const overview = await receiptsService.receiptOverview({ search: invoice.number, branch: invoice.branchId, status: '', page: 1, pageSize: 25 });
+    assert.equal(overview.items.length, 1);
+    assert.equal(overview.items[0].mode, 'simulation');
+    const prepared = await request('/receipts/drafts', 'finance', 'POST', { invoiceId: invoice.id, sourceKey: overview.items[0].sourceKey });
+    assert.equal(prepared.status, 200, await prepared.clone().text());
+    const draftIdentity = z.object({ id: z.string() }).parse(await prepared.json());
+    const opened = await request('/receipts/' + draftIdentity.id, 'finance');
+    assert.equal(opened.status, 200, await opened.clone().text());
+    const detail = await receiptsService.receiptDetail(draftIdentity.id);
+    const draft = detail.draft;
+    const mapping = detail.configuration.mappings.find((mapping) => mapping.bank === 'BCA' && mapping.method === 'QRIS');
+    assert.ok(mapping);
+    const saved = await receiptsService.saveReceiptDraft(draft.id, { version: draft.version, mappingId: mapping.id, mappingVersion: mapping.version,
+      paymentDate: '2026-10-15', paymentReference: 'SIM-REF', notes: '' }, 'finance');
+    await receiptDelivery.submitReceipt(saved.id, saved.version, 'finance');
+    await receiptDelivery.processOneReceipt();
+    const completed = await receiptsService.receiptDetail(saved.id);
+    assert.equal(completed.draft.status, 'SUCCEEDED', completed.draft.error ?? '');
+    assert.equal(completed.draft.mode, 'simulation');
+    assert.equal(completed.settlement.invoiceRemaining, 0);
+    assert.equal((await db.select().from(schema.accurateDeliveries).where(eq(schema.accurateDeliveries.invoiceId, invoice.id))).length, 0);
+    assert.equal(vendorCalls, 0);
+  } finally {
+    globalThis.fetch = oldFetch;
+    await db.update(integrationConfigs).set({ enabled: previous.enabled, encryptedSecret: previous.encryptedSecret }).where(eq(integrationConfigs.id, 'accurate'));
+  }
 });

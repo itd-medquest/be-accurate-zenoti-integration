@@ -183,6 +183,12 @@ export async function createImport(
         for (const c of record.rows)
           c.errors.push('Batch memuat beberapa Center Code. Pisahkan upload per cabang.');
     await withTransaction(async (tx) => {
+      const [currentBranch] = await branchesRepository.lockById(branchId, tx);
+      if (!currentBranch?.active)
+        throw new HttpError(
+          409,
+          'Perusahaan sudah dihapus atau dinonaktifkan. Pilih perusahaan aktif.',
+        );
       await importBatchesRepository.create({ id: batchId, branchId, uploaderId: actorId }, tx);
       const seen = new Set<string>();
       for (const record of records) {

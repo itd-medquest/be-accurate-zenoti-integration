@@ -5,6 +5,7 @@ import {
   companyCreateSchema,
   companyDeleteSchema,
   companyParamsSchema,
+  companyRenameSchema,
 } from '../validations/companies.validation.js';
 
 export const list: RequestHandler = async (_req, res) => {
@@ -14,6 +15,17 @@ export const create: RequestHandler = async (req, res) => {
   res
     .status(201)
     .json(await companies.createCompany(validated(res, companyCreateSchema).name, req.actor.id));
+};
+export const rename: RequestHandler = async (req, res) => {
+  const input = validated(res, companyRenameSchema);
+  res.json(
+    await companies.renameCompany(
+      validated(res, companyParamsSchema, 'params').id,
+      input.name,
+      input.expectedName,
+      req.actor.id,
+    ),
+  );
 };
 export const remove: RequestHandler = async (req, res) => {
   res.json(

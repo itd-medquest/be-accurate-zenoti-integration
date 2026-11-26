@@ -14,6 +14,9 @@ export const companyCreateSchema = createInsertSchema(branches)
   })
   .strict();
 export const companyParamsSchema = z.object({ id: z.string().min(1).max(100) });
+export const companyRenameSchema = companyCreateSchema.extend({
+  expectedName: z.string().min(1).max(100),
+});
 export const companyDeleteSchema = z
   .object({ confirmationName: z.string().trim().min(1).max(100) })
   .strict();

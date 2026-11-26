@@ -15,6 +15,20 @@
       "when": 1794924109548,
       "tag": "0001_mysql_identifier_lengths",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1795583236513,
+      "tag": "0002_amusing_hex",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1795661552339,
+      "tag": "0003_configurable_receipt_rates",
+      "breakpoints": true
     }
   ]
 }

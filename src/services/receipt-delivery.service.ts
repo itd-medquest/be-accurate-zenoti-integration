@@ -10,8 +10,7 @@ import { AccurateReceiptRejected } from './integrations/accurate-client.js';
 import {
   draftSource,
   singleReceiptGroups,
-  receiptNumber,
-  manualReceiptNumber,
+  expectedReceiptNumber,
   lockActor,
   publicDraft,
   type Receipt,
@@ -23,8 +22,15 @@ import {
   type ReceiptInvoice,
   type AccurateReceiptResult,
 } from '../utils/accurate-receipt.js';
-import { receiptAmounts } from '../utils/receipt-amounts.js';
+import { allocationAmounts, receiptMode } from './receipt-settlement.service.js';
 import { HttpError } from '../utils/http-error.js';
+import { isSimulationReceipt } from '../utils/receipt-mode.js';
+import {
+  simulationReceiptBalance,
+  simulationReceiptConnection,
+  submitSimulatedReceipt,
+  completeSimulatedReceipt,
+} from './receipt-simulation.service.js';
 import {
   receiptBanks,
   receiptMethods,
@@ -52,6 +58,10 @@ function verifyInvoice(source: Source, target: ReceiptInvoice) {
 
 export async function receiptBalance(row: Receipt) {
   const { source } = await draftSource(row);
+  if (isSimulationReceipt(row)) {
+    await simulationReceiptConnection(row.branchId);
+    return simulationReceiptBalance(row, source);
+  }
   const { client, profile } = await connectedAccurate(true, row.branchId);
   if (profile.id !== row.databaseId || !source.targetId)
     throw new HttpError(409, 'Database koneksi berbeda dari tujuan faktur.');
@@ -64,8 +74,7 @@ async function preflight(row: Receipt) {
   const { source, group } = await draftSource(row);
   singleReceiptGroups(source);
   // Queued payloads retain the number reviewed before the numbering rule changed.
-  const number =
-    row.payload?.number ?? (await receiptNumber(source, group)) ?? (await manualReceiptNumber(row));
+  const number = row.payload?.number ?? (await expectedReceiptNumber(row, source, group));
   if (!number)
     throw new HttpError(422, 'Isi No. Receipt dan simpan draft sebelum mengirim ke Accurate.');
   if (row.number !== number)
@@ -105,8 +114,15 @@ async function preflight(row: Receipt) {
     (row.sourceMethod === 'card' && !['CREDIT_CARD', 'DEBIT_CARD'].includes(method))
   )
     throw new HttpError(422, 'Metode sumber tidak cocok dengan penerimaan bank yang dipilih.');
-  const amounts = receiptAmounts(row.grossAmount, bank, method);
+  const amounts = await allocationAmounts(
+    row,
+    group,
+    method,
+    receiptMode(row.amountMode),
+    row.inputAmount,
+  );
   if (
+    amounts.gross !== row.grossAmount ||
     amounts.fee !== row.feeAmount ||
     amounts.net !== row.netAmount ||
     amounts.rateBps !== row.rateBps ||
@@ -205,7 +221,23 @@ async function recheck(
     );
   if (!connection.enabled || connection.mode !== 'live')
     throw new HttpError(409, 'Koneksi aktual Accurate dinonaktifkan.');
-  await draftSource(row, tx);
+  const currentSource = await draftSource(row, tx);
+  const method = receiptMethods.find((value) => value === row.method);
+  if (!method) throw new HttpError(422, 'Metode penerimaan belum tersedia.');
+  const amounts = await allocationAmounts(
+    row,
+    currentSource.group,
+    method,
+    receiptMode(row.amountMode),
+    row.inputAmount,
+    tx,
+  );
+  if (
+    amounts.gross !== row.grossAmount ||
+    amounts.fee !== row.feeAmount ||
+    amounts.net !== row.netAmount
+  )
+    throw new HttpError(409, 'Sisa penerimaan berubah. Simpan dan periksa ulang draft.');
   const mapping = row.mappingId && (await receipts.mapping(row.mappingId, tx));
   if (!mapping || mapping.version !== row.mappingVersion)
     throw new HttpError(409, 'Mapping berubah. Periksa ulang draft.');
@@ -233,6 +265,7 @@ export async function submitReceipt(id: string, version: number, actorId: string
   if (['QUEUED', 'SENDING', 'SUCCEEDED'].includes(row.status)) return publicDraft(row);
   if (row.status !== 'DRAFT' || row.version !== version || row.attemptedAt)
     throw new HttpError(409, 'Draft berubah atau sudah pernah dikirim. Muat ulang halaman.');
+  if (isSimulationReceipt(row)) return submitSimulatedReceipt(row, version, actorId);
   const prepared = await preflight(row);
   return withTransaction(async (tx) => {
     const current = await lockOperation(row, actorId, tx);
@@ -343,6 +376,10 @@ export async function processOneReceipt() {
   const row = await claim();
   if (!row) return false;
   try {
+    if (isSimulationReceipt(row)) {
+      await completeSimulatedReceipt(row);
+      return true;
+    }
     if (!row.payload || !row.verification || row.attemptedAt || !row.actorId)
       throw new HttpError(409, 'Identitas atau payload antrean tidak lengkap.');
     const prepared = await preflight(row);
@@ -413,6 +450,11 @@ export async function checkReceipt(id: string, actorId: string) {
   const row = await receipts.find(id);
   if (!row) throw new HttpError(404, 'Penerimaan tidak ditemukan.');
   if (row.status === 'SUCCEEDED') return publicDraft(row);
+  if (isSimulationReceipt(row))
+    throw new HttpError(
+      409,
+      'Simulasi hanya menggunakan riwayat lokal. Tidak ada hasil Accurate yang perlu diperiksa.',
+    );
   if (row.status !== 'NEEDS_REVIEW' || !row.attemptedAt || !row.payload || !row.verification)
     throw new HttpError(409, 'Tidak ada hasil pengiriman yang perlu direkonsiliasi.');
   const { client, profile } = await connectedAccurate(true, row.branchId);
@@ -441,6 +483,8 @@ export async function reopenReceipt(id: string, version: number, actorId: string
       'Hasil pengiriman belum pasti. Gunakan Periksa hasil, bukan pengiriman ulang.',
     );
   if (row.attemptedAt) {
+    if (isSimulationReceipt(row))
+      throw new HttpError(409, 'Penerimaan simulasi yang selesai tidak dapat dikirim ulang.');
     const { client, profile } = await connectedAccurate(true, row.branchId);
     if (profile.id !== row.databaseId || (await client.findReceipt(profile, row.number)))
       throw new HttpError(409, 'Tujuan berbeda atau nomor penerimaan sudah ada. Periksa Accurate.');

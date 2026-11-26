@@ -7,6 +7,9 @@ import { HttpError } from '../utils/http-error.js';
 import { receiptSourceGroups } from '../utils/receipt-amounts.js';
 import { pendingReceiptNumber, sourceReceiptNumber } from '../utils/receipt-number.js';
 import type { ReceiptSourceGroup } from '../types/receipt.types.js';
+import { paymentKey } from './receipt-settlement.service.js';
+import { receiptStageNumber } from '../utils/receipt-settlement.js';
+import { isSimulationReceipt } from '../utils/receipt-mode.js';
 export type Receipt = typeof accurateReceipts.$inferSelect;
 export type Source = Awaited<ReturnType<typeof receipts.sources>>[number];
 export const publicDraft = ({
@@ -15,6 +18,7 @@ export const publicDraft = ({
   ...row
 }: Receipt) => ({
   ...row,
+  mode: isSimulationReceipt(row) ? ('simulation' as const) : ('live' as const),
   number: row.number === pendingReceiptNumber(row.id) ? '' : row.number,
 });
 export async function lockActor(id: string, roles: string[], context: DbExecutor) {
@@ -41,7 +45,7 @@ export async function draftSource(row: Receipt, context?: DbExecutor) {
   const source = (await receipts.sources(context)).find(
     (value) => value.invoiceId === row.invoiceId,
   );
-  const group = source && sourceGroups(source).find((value) => value.key === row.sourceKey);
+  const group = source && sourceGroups(source).find((value) => value.key === paymentKey(row));
   if (
     !source ||
     !group ||
@@ -56,13 +60,7 @@ export async function draftSource(row: Receipt, context?: DbExecutor) {
   return { source, group };
 }
 export function singleReceiptGroups(source: Source) {
-  const groups = sourceGroups(source);
-  if (groups.length > 1)
-    throw new HttpError(
-      422,
-      'Faktur memiliki beberapa pembayaran terpisah. Penerimaan ini perlu ditangani manual di Accurate.',
-    );
-  return groups;
+  return sourceGroups(source);
 }
 export async function receiptNumber(
   source: Source,
@@ -94,4 +92,46 @@ export async function manualReceiptNumber(row: Receipt, context?: DbExecutor) {
   )
     ? row.number
     : null;
+}
+
+/** A missing source receipt can be supplied once and shared by all stages of this invoice. */
+export async function receiptBaseNumber(
+  source: Source,
+  group: ReceiptSourceGroup,
+  context?: DbExecutor,
+) {
+  const fromSource = await receiptNumber(source, group, context);
+  if (fromSource) return fromSource;
+  const records = (await receipts.forInvoice(source.invoiceId, context)).filter(
+    (row) => isSimulationReceipt(row) === (source.mode === 'simulation'),
+  );
+  const bases = new Set(
+    records.map((row) => row.baseNumber).filter((value): value is string => !!value),
+  );
+  if (bases.size > 1)
+    throw new HttpError(409, 'Nomor dasar penerimaan tidak konsisten. Periksa riwayat.');
+  if (bases.size) return [...bases][0];
+  for (const row of records) {
+    if (row.receiptSequence === 0) {
+      const manual = await manualReceiptNumber(row, context);
+      if (manual) return manual;
+    }
+  }
+  return null;
+}
+export async function expectedReceiptNumber(
+  row: Receipt,
+  source: Source,
+  group: ReceiptSourceGroup,
+  context?: DbExecutor,
+) {
+  const base = await receiptBaseNumber(source, group, context);
+  try {
+    return base ? receiptStageNumber(base, row.receiptSequence) : null;
+  } catch (cause) {
+    throw new HttpError(
+      422,
+      cause instanceof Error ? cause.message : 'Nomor penerimaan tidak valid.',
+    );
+  }
 }

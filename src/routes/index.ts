@@ -19,6 +19,7 @@ import {
   companyCreateSchema,
   companyDeleteSchema,
   companyParamsSchema,
+  companyRenameSchema,
 } from '../validations/companies.validation.js';
 
 export const apiRouter = Router();
@@ -26,6 +27,12 @@ apiRouter.get('/me', system.me);
 apiRouter.get('/branches', settings.listBranches);
 apiRouter.get('/companies', admin, companies.list);
 apiRouter.post('/companies', admin, validate({ body: companyCreateSchema }), companies.create);
+apiRouter.patch(
+  '/companies/:id',
+  admin,
+  validate({ params: companyParamsSchema, body: companyRenameSchema }),
+  companies.rename,
+);
 apiRouter.delete(
   '/companies/:id',
   admin,

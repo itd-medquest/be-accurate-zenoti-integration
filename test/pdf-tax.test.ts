@@ -119,6 +119,37 @@ test('merged benefit and payment cells retain billed tax and flag inconsistent p
   assert.equal(c.outstanding, 0);
 });
 
+test('distinct card and wrapped bank-transfer payments retain their own method and amount', () => {
+  const pages = receipt(1800901, 198099, false);
+  pages[0].tokens = pages[0].tokens.filter(
+    (token) =>
+      !['Custom (QRIS)', '24/10/2026', '1.999.000', 'Tax Based on Collection'].includes(
+        token.text,
+      ) || token.x < 300,
+  );
+  pages[0].tokens.push(
+    { x: 312, y: 542, text: 'Mastercard' },
+    { x: 312, y: 532, text: 'Mastercard(BCA)' },
+    { x: 402, y: 532, text: '24/10/2026' },
+    { x: 459, y: 532, text: '1.990.000' },
+    { x: 312, y: 511, text: 'Custom' },
+    { x: 350, y: 511, text: '( Bank' },
+    { x: 312, y: 501, text: 'Transfer )' },
+    { x: 402, y: 506, text: '24/10/2026' },
+    { x: 459, y: 506, text: '9.000' },
+    { x: 311, y: 485, text: 'Tax Based on Collection' },
+  );
+  const [candidate] = parsePdfPages(pages);
+  assert.deepEqual(
+    candidate.payments.map(({ method, amount }) => ({ method, amount })),
+    [
+      { method: 'card', amount: 1990000 },
+      { method: 'bank', amount: 9000 },
+    ],
+  );
+  assert.equal(new Set(candidate.payments.map((row) => row.id)).size, 2);
+});
+
 test('consistent named package splits services and preserves exact tax across merged or separate cells', () => {
   for (const merged of [true, false]) {
     const [c] = parsePdfPages(receipt(350000, 38500, merged));
