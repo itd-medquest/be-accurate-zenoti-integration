@@ -24,7 +24,8 @@ export type Benefit = {
   name: string;
   quantity: number;
   unitPrice: number;
-  discountPercent: number;
+  discountPercent?: number;
+  discountAmount?: number;
   netAmount: number;
 };
 export type ImportCandidate = {
@@ -56,6 +57,13 @@ export type ImportCandidate = {
     total: number;
   }[];
   accountingReviewedAt?: string;
+  reviewException?: {
+    reason: string;
+    actorId: string;
+    reviewedAt: string;
+    fingerprint: string;
+    errors: string[];
+  };
   number: string;
   customer: string;
   customerId: string;

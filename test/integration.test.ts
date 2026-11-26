@@ -56,6 +56,16 @@ test('company management requires an admin and enforces typed confirmation on de
   const created = await request('/companies', 'super_admin', 'POST', { name: 'HTTP Company' });
   assert.equal(created.status, 201);
   const company = await created.json();
+  const rename = { name: '  HTTP   Company Updated  ', expectedName: company.name };
+  assert.equal((await request(`/companies/${company.id}`, undefined, 'PATCH', rename)).status, 401);
+  assert.equal((await request(`/companies/${company.id}`, 'finance', 'PATCH', rename)).status, 403);
+  assert.equal((await request(`/companies/${company.id}`, 'viewer', 'PATCH', rename)).status, 403);
+  assert.equal((await request(`/companies/${company.id}`, 'super_admin', 'PATCH', { ...rename, name: ' ' })).status, 400);
+  assert.equal((await request(`/companies/${company.id}`, 'super_admin', 'PATCH', { ...rename, active: false })).status, 400);
+  assert.equal((await request(`/companies/${company.id}`, 'super_admin', 'PATCH', { ...rename, name: 'x'.repeat(101) })).status, 400);
+  assert.equal((await request(`/companies/${company.id}`, 'super_admin', 'PATCH', rename)).status, 200);
+  assert.equal((await request(`/companies/${company.id}`, 'super_admin', 'PATCH', rename)).status, 409);
+  company.name = 'HTTP Company Updated';
   assert.equal((await request(`/companies/${company.id}`, 'finance', 'DELETE', { confirmationName: company.name })).status, 403);
   assert.equal((await request(`/companies/${company.id}`, 'super_admin', 'DELETE', { confirmationName: 'wrong' })).status, 400);
   const settings = await (await request(`/settings?branchId=${company.id}`, 'super_admin')).json();
@@ -1878,5 +1888,260 @@ afterDatabase(async () => {
     await closeDb();
   } finally {
     await closeTestDatabases();
+  }
+});
+
+test('nominal discount API inputs preserve source totals and reject dual or excessive discount values', async () => {
+  const uuid = randomUUID();
+  const data = Buffer.from(
+    receiptPdf().toString('latin1').replaceAll('11111111-1111-4111-8111-111111111111', uuid),
+    'latin1',
+  );
+  let batch = await (await uploadFiles([{ name: 'nominal-input.pdf', data }])).json();
+  const row = batch.rows[0],
+    original = row.candidate.items[0];
+  const endpoint = `/imports/${batch.id}/rows/${row.id}/items/${encodeURIComponent(original.id)}`;
+  const fields = {
+    version: batch.version,
+    name: original.name,
+    quantity: original.quantity,
+    unitPrice: original.unitPrice,
+    discountAmount: original.discount,
+    reason: 'Confirmed nominal source discount',
+  };
+  assert.equal((await request(endpoint, 'viewer', 'PATCH', fields)).status, 403);
+  assert.equal(
+    (await request(endpoint, 'finance', 'PATCH', { ...fields, discountPercent: 70 })).status,
+    400,
+  );
+  assert.equal(
+    (
+      await request(endpoint, 'finance', 'PATCH', {
+        ...fields,
+        discountAmount: original.quantity * original.unitPrice + 1,
+      })
+    ).status,
+    422,
+  );
+  const result = await request(endpoint, 'finance', 'PATCH', fields);
+  assert.equal(result.status, 200, await result.clone().text());
+  batch = await result.json();
+  assert.equal(batch.rows[0].candidate.items[0].discount, original.discount);
+  assert.equal(batch.rows[0].candidate.items[0].discountPercent, undefined);
+  assert.equal(batch.rows[0].candidate.total, row.candidate.total);
+  assert.deepEqual(batch.rows[0].errors, []);
+});
+
+test('package extraction exceptions require a reason, exact financials, authorization and a current audited review', async () => {
+  const { importRows } = await import('../src/db/schema/index.js');
+  const uuid = randomUUID();
+  const data = Buffer.from(
+    receiptPdf()
+      .toString('latin1')
+      .replaceAll('11111111-1111-4111-8111-111111111111', uuid)
+      .replaceAll('TEST-RECEIPT-001', 'SPECIAL-' + uuid.slice(0, 12)),
+    'latin1',
+  );
+  let batch = await (await uploadFiles([{ name: 'special-package.pdf', data }])).json();
+  const row = batch.rows[0];
+  const parserError =
+    'Rincian tabel Benefit belum terbaca lengkap. Lengkapi semua layanan sesuai dokumen sumber.';
+  const candidate = { ...row.candidate, businessStatus: 'CLOSED', errors: [parserError] };
+  await db.update(importRows).set({ candidate }).where(eq(importRows.id, row.id));
+  const endpoint = `/imports/${batch.id}/rows/${row.id}/reviewed`;
+  const input = {
+    version: batch.version,
+    exceptionReason: 'Source detail reconciled and verified against the original document',
+  };
+  assert.equal((await request(endpoint, 'viewer', 'PATCH', input)).status, 403);
+  assert.equal(
+    (await request(endpoint, 'finance', 'PATCH', { ...input, exceptionReason: 'short' })).status,
+    400,
+  );
+  const modified = {
+    ...candidate,
+    items: candidate.items.map((item: { tax: number }, index: number) =>
+      index === 0 ? { ...item, tax: item.tax + 1 } : item,
+    ),
+  };
+  await db.update(importRows).set({ candidate: modified }).where(eq(importRows.id, row.id));
+  assert.equal((await request(endpoint, 'finance', 'PATCH', input)).status, 422);
+  await db.update(importRows).set({ candidate }).where(eq(importRows.id, row.id));
+  const approved = await request(endpoint, 'finance', 'PATCH', input);
+  assert.equal(approved.status, 200, await approved.clone().text());
+  batch = await approved.json();
+  assert.deepEqual(batch.rows[0].errors, []);
+  assert.equal(batch.rows[0].exceptionReview.accepted, true);
+  assert.deepEqual(batch.rows[0].candidate.errors, [parserError]);
+  assert.equal(batch.rows[0].candidate.reviewException.actorId, 'finance');
+  assert.equal(batch.rows[0].candidate.reviewException.reason, input.exceptionReason);
+  assert.equal((await request(endpoint, 'finance', 'PATCH', input)).status, 409);
+  const logs = await db
+    .select()
+    .from(auditLogs)
+    .where(eq(auditLogs.action, 'import.exception.review'));
+  assert.ok(logs.some((event) => event.entityId === batch.id));
+  const current = batch.rows[0].candidate,
+    first = current.items[0];
+  const edit = await request(
+    `/imports/${batch.id}/rows/${row.id}/items/${encodeURIComponent(first.id)}`,
+    'finance',
+    'PATCH',
+    {
+      version: batch.version,
+      name: first.name + ' corrected',
+      quantity: first.quantity,
+      unitPrice: first.unitPrice,
+      reason: 'Treatment wording checked against source',
+    },
+  );
+  assert.equal(edit.status, 200, await edit.clone().text());
+  batch = await edit.json();
+  assert.equal(batch.rows[0].exceptionReview.accepted, false);
+  assert.equal(batch.rows[0].candidate.reviewException, undefined);
+  assert.ok(batch.rows[0].errors.includes(parserError));
+  const acceptedAgain = await request(endpoint, 'finance', 'PATCH', {
+    ...input,
+    version: batch.version,
+  });
+  assert.equal(acceptedAgain.status, 200, await acceptedAgain.clone().text());
+  batch = await acceptedAgain.json();
+  const submitted = await request(`/imports/${batch.id}/submit`, 'finance', 'POST', {
+    version: batch.version,
+    rowIds: [row.id],
+    accountingReviewed: true,
+  });
+  assert.equal(submitted.status, 200, await submitted.clone().text());
+  assert.ok(
+    (await db.select().from(auditLogs).where(eq(auditLogs.action, 'import.exception.submit'))).some(
+      (event) => event.entityId === batch.id,
+    ),
+  );
+});
+
+test('re-reading recoverable package drafts requires explicit reset and preserves prior rows and the source file', async () => {
+  const { importRows } = await import('../src/db/schema/index.js');
+  const uuid = randomUUID();
+  const data = Buffer.from(
+    receiptPdf().toString('latin1').replaceAll('11111111-1111-4111-8111-111111111111', uuid),
+    'latin1',
+  );
+  let batch = await (await uploadFiles([{ name: 'legacy-benefit.pdf', data }])).json();
+  const row = batch.rows[0];
+  await db
+    .update(importRows)
+    .set({
+      candidate: {
+        ...row.candidate,
+        accountingReviewedAt: new Date().toISOString(),
+        errors: ['Manfaat paket tidak dapat dipasangkan secara pasti ke item utama.'],
+      },
+    })
+    .where(eq(importRows.id, row.id));
+  const endpoint = `/imports/${batch.id}/files/${batch.files[0].id}/reparse`;
+  assert.equal(
+    (await request(endpoint, 'viewer', 'POST', { version: batch.version, resetReview: true }))
+      .status,
+    403,
+  );
+  assert.equal(
+    (await request(endpoint, 'finance', 'POST', { version: batch.version })).status,
+    409,
+  );
+  const reread = await request(endpoint, 'finance', 'POST', {
+    version: batch.version,
+    resetReview: true,
+  });
+  assert.equal(reread.status, 200, await reread.clone().text());
+  batch = await reread.json();
+  assert.notEqual(batch.rows[0].id, row.id);
+  assert.deepEqual(batch.rows[0].errors, []);
+  assert.equal(batch.rows[0].candidate.accountingReviewedAt, undefined);
+  const [retained] = await db.select().from(importRows).where(eq(importRows.id, row.id));
+  assert.equal(retained.status, 'DELETED');
+  assert.ok(retained.candidate.accountingReviewedAt);
+  assert.deepEqual(
+    Buffer.from(
+      await (
+        await request(`/imports/${batch.id}/files/${batch.files[0].id}`, 'finance')
+      ).arrayBuffer(),
+    ),
+    data,
+  );
+  assert.equal(
+    (await request(endpoint, 'finance', 'POST', { version: batch.version, resetReview: true }))
+      .status,
+    409,
+  );
+});
+
+
+test('uploaded simulated invoices continue through receipt review with a disabled Accurate connection and no vendor requests', async () => {
+  const schema = await import('../src/db/schema/index.js');
+  const receiptsService = await import('../src/services/receipts.service.js');
+  const receiptDelivery = await import('../src/services/receipt-delivery.service.js');
+  const oldFetch = globalThis.fetch;
+  let vendorCalls = 0;
+  globalThis.fetch = async (input, init) => {
+    if (new URL(String(input)).hostname.endsWith('.accurate.id')) {
+      vendorCalls++; throw new Error('Simulation tried to contact Accurate');
+    }
+    return oldFetch(input, init);
+  };
+  const [previous] = await db.select().from(integrationConfigs).where(eq(integrationConfigs.id, 'accurate'));
+  try {
+    await db.update(integrationConfigs).set({ enabled: true, encryptedSecret: encrypt(JSON.stringify({
+      version: 1, mode: 'simulation', apiToken: '', signatureSecret: '', taxPolicy: 'gross-no-tax',
+    })) }).where(eq(integrationConfigs.id, 'accurate'));
+    const uuid = randomUUID();
+    const source = Buffer.from(receiptPdf({ invoiceNumber: 'SIM-' + uuid.slice(0,8), receiptNumber: 'RC-SIM-' + uuid.slice(0,8) })
+      .toString('latin1').replaceAll('11111111-1111-4111-8111-111111111111', uuid), 'latin1');
+    const preview = z.object({ id: z.string(), version: z.number(), rows: z.array(z.object({ id: z.string() })) });
+    const uploaded = await uploadFiles([{ name: 'simulation-journey.pdf', data: source }]);
+    assert.equal(uploaded.status, 201, await uploaded.clone().text());
+    let batch = preview.parse(await uploaded.json());
+    const rowId = batch.rows[0].id;
+    const reviewed = await request('/imports/' + batch.id + '/rows/' + rowId, 'finance', 'PATCH', { version: batch.version, businessStatus: 'CLOSED' });
+    assert.equal(reviewed.status, 200, await reviewed.clone().text());
+    batch = preview.parse(await reviewed.json());
+    const confirmed = await request('/imports/' + batch.id + '/rows/' + rowId + '/reviewed', 'finance', 'PATCH', { version: batch.version });
+    assert.equal(confirmed.status, 200, await confirmed.clone().text());
+    batch = preview.parse(await confirmed.json());
+    const submitted = await request('/imports/' + batch.id + '/submit', 'finance', 'POST', { version: batch.version, rowIds: [rowId], accountingReviewed: true });
+    assert.equal(submitted.status, 200, await submitted.clone().text());
+    let invoice = await db.query.invoices.findFirst({ where: eq(invoices.sourceId, uuid) });
+    assert.ok(invoice);
+    for (let tick = 0; tick < 100 && invoice.syncStatus !== 'SYNCED'; tick++) {
+      await processOne();
+      const updated = await db.query.invoices.findFirst({ where: eq(invoices.id, invoice.id) });
+      assert.ok(updated); invoice = updated;
+    }
+    assert.equal(invoice.syncStatus, 'SYNCED');
+    await db.update(integrationConfigs).set({ enabled: false }).where(eq(integrationConfigs.id, 'accurate'));
+    const overview = await receiptsService.receiptOverview({ search: invoice.number, branch: invoice.branchId, status: '', page: 1, pageSize: 25 });
+    assert.equal(overview.items.length, 1);
+    assert.equal(overview.items[0].mode, 'simulation');
+    const prepared = await request('/receipts/drafts', 'finance', 'POST', { invoiceId: invoice.id, sourceKey: overview.items[0].sourceKey });
+    assert.equal(prepared.status, 200, await prepared.clone().text());
+    const draftIdentity = z.object({ id: z.string() }).parse(await prepared.json());
+    const opened = await request('/receipts/' + draftIdentity.id, 'finance');
+    assert.equal(opened.status, 200, await opened.clone().text());
+    const detail = await receiptsService.receiptDetail(draftIdentity.id);
+    const draft = detail.draft;
+    const mapping = detail.configuration.mappings.find((mapping) => mapping.bank === 'BCA' && mapping.method === 'QRIS');
+    assert.ok(mapping);
+    const saved = await receiptsService.saveReceiptDraft(draft.id, { version: draft.version, mappingId: mapping.id, mappingVersion: mapping.version,
+      paymentDate: '2026-10-15', paymentReference: 'SIM-REF', notes: '' }, 'finance');
+    await receiptDelivery.submitReceipt(saved.id, saved.version, 'finance');
+    await receiptDelivery.processOneReceipt();
+    const completed = await receiptsService.receiptDetail(saved.id);
+    assert.equal(completed.draft.status, 'SUCCEEDED', completed.draft.error ?? '');
+    assert.equal(completed.draft.mode, 'simulation');
+    assert.equal(completed.settlement.invoiceRemaining, 0);
+    assert.equal((await db.select().from(schema.accurateDeliveries).where(eq(schema.accurateDeliveries.invoiceId, invoice.id))).length, 0);
+    assert.equal(vendorCalls, 0);
+  } finally {
+    globalThis.fetch = oldFetch;
+    await db.update(integrationConfigs).set({ enabled: previous.enabled, encryptedSecret: previous.encryptedSecret }).where(eq(integrationConfigs.id, 'accurate'));
   }
 });

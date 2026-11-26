@@ -19,7 +19,11 @@ Upload, membuka review, menyimpan mapping, dan menyimpan draft tidak mengirim tr
 | BCA  | 2%           | 1,8%  | 0,7% | 0%                         |
 | BNI  | 2%           | 1,8%  | 0,7% | 0%                         |
 
-Biaya selalu dibulatkan **ke atas** ke rupiah penuh. Contoh QRIS Rp200.001: biaya Rp1.401, bersih bank Rp198.600. Backend menghitung tarif; request tidak dapat menentukan tarif atau nominal biaya sendiri. Nominal didukung sampai Rp2.147.483.647 per kelompok pembayaran.
+Tabel tersebut adalah tarif bawaan untuk mapping yang belum mempunyai tarif khusus. Super Admin dapat mengatur tarif default per perusahaan, bank, dan metode pada **Settings > Akun penerimaan**. Finance dapat memakai ikon pencil di samping **Tarif bank** untuk mengubah tarif pada penerimaan yang sedang direview, lalu menyimpan draft. Tarif khusus tersebut tidak mengubah Settings dan dapat dikembalikan dengan **Gunakan tarif Settings**. Tarif mendukung 0–99,99% dengan maksimal dua angka desimal; API menggunakan integer basis points (`180` berarti `1,8%`).
+
+Biaya selalu dibulatkan **ke atas** ke rupiah penuh. Contoh QRIS Rp200.001 pada tarif bawaan 0,7%: biaya Rp1.401, bersih bank Rp198.600. Backend menghitung nominal biaya dan nilai bersih; request tidak dapat memasukkan nominal biaya sendiri. Nominal didukung sampai Rp2.147.483.647 per kelompok pembayaran. Akun biaya harus tersedia bila tarif menghasilkan biaya, termasuk transfer yang diberi tarif khusus.
+
+Tarif efektif dibekukan pada penerimaan tersimpan. Perubahan Settings tidak menulis ulang penerimaan yang sudah berhasil. Draft dengan mapping berversi lama harus disimpan dan direview kembali. Penerimaan yang sudah antre atau pernah dicoba tidak dapat diubah tarifnya. Lihat [perhitungan penerimaan bertahap dan migration tarif](partial-receipts.md).
 
 Hubungan nominal pada respons receipt referensi sudah diperiksa secara read-only:
 
@@ -28,7 +32,7 @@ Hubungan nominal pada respons receipt referensi sudah diperiksa secara read-only
 - detailInvoice.invoicePayment, chequeAmount, dan totalPayment adalah bersih bank.
 - Bruto = bersih + biaya. Biaya dicatat pada akun beban melalui detailDiscount, tanpa mengubah nilai penjualan pada faktur.
 
-Contoh tanpa data pelanggan: bruto Rp150.000, biaya CC Rp3.000, bersih Rp147.000. Payload menggunakan paymentAmount 150000, chequeAmount 147000, dan detailDiscount.amount 3000. Transfer langsung tidak menyertakan detailDiscount.
+Contoh tanpa data pelanggan: bruto Rp150.000, biaya CC 2% Rp3.000, bersih Rp147.000. Payload menggunakan paymentAmount 150000, chequeAmount 147000, dan detailDiscount.amount 3000. Penerimaan tanpa biaya tidak menyertakan detailDiscount.
 
 Metode manual pada receipt referensi tidak digunakan untuk menebak metode sumber. Finance tetap memilih CC/debit secara eksplisit jika dokumen hanya menyebut kartu. bankNo adalah nomor **akun perkiraan**, bukan nomor rekening bank. Akun beban juga perlu diizinkan pada pengaturan akun diskon Accurate.
 

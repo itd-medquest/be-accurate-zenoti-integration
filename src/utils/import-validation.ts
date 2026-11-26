@@ -1,3 +1,4 @@
+import { hasCurrentReviewException, packageExtractionErrors } from './import-exceptions.js';
 import { createHash } from 'node:crypto';
 import type { ImportCandidate } from '../types/import.types.js';
 import { percentageDiscountAmount, validUnitPrice } from './discount.js';
@@ -21,7 +22,10 @@ export function allocateTax(nets: number[], total: number) {
   return shares.map((p) => p.value);
 }
 export function candidateErrors(c: ImportCandidate) {
-  const errors = [...c.errors];
+  const acknowledged = hasCurrentReviewException(c)
+    ? new Set(packageExtractionErrors(c))
+    : new Set<string>();
+  const errors = c.errors.filter((error) => !acknowledged.has(error));
   if (
     c.items.some(
       (i) =>

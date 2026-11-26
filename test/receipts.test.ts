@@ -288,6 +288,8 @@ test('account mappings are scoped, verified, versioned and require a fee account
   };
   assert.equal((await request('/mappings', 'PUT', { ...body, feeAccountId: null })).status, 422);
   assert.equal((await request('/mappings', 'PUT', { ...body, accountId: '201' })).status, 422);
+  for (const rateBps of [-1, 10000, 1.5, '180'])
+    assert.equal((await request('/mappings', 'PUT', { ...body, rateBps })).status, 400);
   const response = await request('/mappings', 'PUT', body);
   assert.equal(response.status, 200);
   mappingId = (await response.json()).id;
@@ -315,6 +317,49 @@ test('overview filters the complete source set and draft preparation is idempote
   assert.equal((await db.select().from(schema.accurateReceipts)).length, 1);
   assert.equal((await db.select().from(schema.jobs)).length, 0);
   assert.equal(writes, 0);
+});
+
+test('processing overview combines queued and sending receipts without changing individual status filters or summary scope', async () => {
+  const [original] = await db
+    .select()
+    .from(schema.accurateReceipts)
+    .where(eq(schema.accurateReceipts.id, draftId));
+  const addedIds = [randomUUID(), randomUUID()];
+  try {
+    await db.insert(schema.accurateReceipts).values(
+      ['QUEUED', 'SENDING'].map((status, index) => ({
+        ...original,
+        id: addedIds[index],
+        sourceKey: (index === 0 ? 'b' : 'c').repeat(64),
+        paymentSourceKey: null,
+        number: `PROCESSING-${status}`,
+        status,
+      })),
+    );
+    const processing = await request(`?status=PROCESSING&branch=${branchId}&page=2&pageSize=10`);
+    assert.equal(processing.status, 200);
+    const result = await processing.json();
+    assert.equal(result.total, 2);
+    assert.equal(result.page, 1);
+    assert.deepEqual(result.items.map((row: { status: string }) => row.status).sort(), [
+      'QUEUED',
+      'SENDING',
+    ]);
+    assert.equal(result.summary.processing, 2);
+    assert.equal(result.summary.draft, 1);
+    const queued = await (await request('?status=QUEUED')).json();
+    assert.equal(queued.total, 1);
+    assert.equal(queued.items[0].status, 'QUEUED');
+    assert.equal(queued.summary.processing, 2);
+    const otherCompany = await (await request(`?status=PROCESSING&branch=${randomUUID()}`)).json();
+    assert.equal(otherCompany.total, 0);
+    assert.equal(otherCompany.summary.processing, 0);
+    assert.equal((await request('?status=INVALID')).status, 400);
+    assert.equal(writes, 0);
+  } finally {
+    for (const id of addedIds)
+      await db.delete(schema.accurateReceipts).where(eq(schema.accurateReceipts.id, id));
+  }
 });
 
 test('draft save calculates approved fees server-side and rejects stale versions and supplied rates', async () => {
@@ -358,6 +403,22 @@ test('draft save calculates approved fees server-side and rejects stale versions
 });
 
 test('submission rejects stale versions and never queues an unreviewed request', async () => {
+  for (const rateOverrideBps of [-1, 10000, 1.5, '180']) {
+    assert.equal(
+      (
+        await request('/' + draftId, 'PUT', {
+          mappingId,
+          mappingVersion: 1,
+          version: 2,
+          paymentDate: '2026-11-01',
+          paymentReference: 'REF-RATE',
+          notes: '',
+          rateOverrideBps,
+        })
+      ).status,
+      400,
+    );
+  }
   assert.equal(
     (await request('/' + draftId + '/submit', 'POST', { version: 2, confirmed: false }, 'finance'))
       .status,

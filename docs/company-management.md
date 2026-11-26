@@ -23,9 +23,17 @@ Tidak diperlukan perubahan struktur tabel atau reset database. Konfigurasi per p
 
 ## Menghapus perusahaan
 
-Perusahaan dapat dihapus jika belum memiliki riwayat upload, invoice, atau penerimaan. Penghapusan meminta nama perusahaan yang sama persis, diperiksa kembali di server, dan dicatat pada audit log.
+Perusahaan dapat dihapus jika belum memiliki upload aktif, invoice, atau penerimaan. Status koneksi aktif/nonaktif dan kelengkapan kredensial tidak menentukan apakah perusahaan boleh dihapus. Penghapusan meminta nama perusahaan yang sama persis, diperiksa kembali di server, dan dicatat pada audit log.
 
-Koneksi serta mapping lokal perusahaan yang belum digunakan ikut dibersihkan. Riwayat transaksi, file sumber, audit log, dan transaksi pada Accurate tidak dihapus oleh tindakan ini. Perusahaan yang memiliki riwayat tidak dapat dihapus, termasuk ketika batch pernah dihapus dari daftar draft.
+Jika seluruh upload perusahaan hanya berupa draft yang sudah berstatus `DELETED` dan belum pernah disubmit, perusahaan dapat dihapus dari daftar. Record perusahaan dinonaktifkan agar relasi dokumen sumber, rincian upload, dan audit tetap utuh. Perusahaan tersebut tidak lagi muncul pada pilihan perusahaan, tidak dapat dikonfigurasi ulang atau menerima upload baru, dan nama yang sama dapat dipakai perusahaan baru dengan identitas berbeda. Upload juga memeriksa ulang perusahaan di dalam transaction lock sebelum disimpan untuk mencegah upload bersamaan dengan penghapusan.
+
+Koneksi serta mapping lokal perusahaan yang belum digunakan ikut dibersihkan. Riwayat transaksi, file sumber, audit log, dan transaksi pada Accurate tidak dihapus oleh tindakan ini. Upload aktif, arsip, upload yang pernah disubmit, invoice, dan penerimaan tetap menghalangi penghapusan. Perusahaan yang sama sekali tidak memiliki upload atau transaksi tetap dihapus secara fisik seperti sebelumnya.
+
+## Mengubah nama perusahaan
+
+Pilih **Edit nama** pada perusahaan yang ingin diperbarui, lalu simpan nama barunya. Perusahaan yang sudah memiliki transaksi juga dapat diubah namanya. Perubahan hanya berlaku pada nama perusahaan di intgrte; ID perusahaan, koneksi, tujuan Accurate, mapping, dan transaksi tetap sama. Nama perusahaan pada Accurate tidak diubah.
+
+Endpoint `PATCH /companies/:id` menerima `name` dan `expectedName`, hanya untuk Super Admin. Server menormalkan spasi, membatasi nama hingga 100 karakter, menolak nama duplikat tanpa membedakan huruf besar/kecil, dan menolak perubahan bila nama lama sudah berubah sejak modal dibuka. Pengecekan nama memakai lock yang sama dengan pendaftaran perusahaan. Audit `company.rename` menyimpan nama lama dan baru.
 
 ## Deployment
 

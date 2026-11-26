@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, lt, ne, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   accurateDeliveries,
@@ -6,9 +6,12 @@ import {
   invoices,
   importRows,
   receiptAccountMappings,
+  invoiceSyncs,
+  simulatedDrafts,
 } from '../db/schema/index.js';
 import type { DbExecutor } from './unit-of-work.repository.js';
 import { isDuplicateEntry } from './mysql-errors.js';
+import { simulationReceiptDatabase } from '../utils/receipt-mode.js';
 
 export function sourceCandidates(invoiceId: string, context: DbExecutor = db) {
   return context
@@ -19,13 +22,14 @@ export function sourceCandidates(invoiceId: string, context: DbExecutor = db) {
     );
 }
 
-export function sources(context: DbExecutor = db) {
-  return context
+export async function sources(context: DbExecutor = db) {
+  const live = await context
     .select({
       invoiceId: invoices.id,
       branchId: invoices.branchId,
       invoiceNumber: invoices.number,
       customer: invoices.customer,
+      customerId: invoices.customerId,
       date: invoices.date,
       total: invoices.total,
       sourceId: invoices.sourceId,
@@ -45,6 +49,61 @@ export function sources(context: DbExecutor = db) {
     .innerJoin(invoices, eq(invoices.id, accurateDeliveries.invoiceId))
     .where(eq(accurateDeliveries.status, 'SUCCEEDED'))
     .orderBy(desc(invoices.date));
+  const simulated = await context
+    .select({
+      invoiceId: invoices.id,
+      branchId: invoices.branchId,
+      invoiceNumber: invoices.number,
+      customer: invoices.customer,
+      customerId: invoices.customerId,
+      date: invoices.date,
+      total: invoices.total,
+      sourceId: invoices.sourceId,
+      payments: invoices.payments,
+      sourceVersion: invoices.version,
+      targetId: simulatedDrafts.id,
+      targetNumber: simulatedDrafts.number,
+      deliveredVersion: invoiceSyncs.version,
+      expectedTotal: simulatedDrafts.total,
+      exception: invoices.exception,
+      businessStatus: invoices.businessStatus,
+    })
+    .from(invoiceSyncs)
+    .innerJoin(invoices, eq(invoices.id, invoiceSyncs.invoiceId))
+    .innerJoin(
+      simulatedDrafts,
+      and(
+        eq(simulatedDrafts.id, invoiceSyncs.targetId),
+        eq(simulatedDrafts.reference, invoices.sourceId),
+        eq(simulatedDrafts.databaseId, invoiceSyncs.databaseId),
+        eq(simulatedDrafts.version, invoiceSyncs.version),
+      ),
+    )
+    .leftJoin(accurateDeliveries, eq(accurateDeliveries.invoiceId, invoices.id))
+    .where(and(isNull(accurateDeliveries.invoiceId), eq(invoices.syncStatus, 'SYNCED')))
+    .orderBy(desc(invoices.date));
+  return [
+    ...live.map((row) => ({ ...row, mode: 'live' as const })),
+    ...simulated.map((row) => {
+      const invoicePayload: Record<string, string> = { customerNo: row.customerId };
+      return {
+        ...row,
+        mode: 'simulation' as const,
+        databaseId: simulationReceiptDatabase(row.branchId),
+        targetBranchId: '1',
+        invoicePayload,
+      };
+    }),
+  ];
+}
+export function insertSimulationMapping(
+  data: typeof receiptAccountMappings.$inferInsert,
+  context: DbExecutor,
+) {
+  return context
+    .insert(receiptAccountMappings)
+    .values(data)
+    .onDuplicateKeyUpdate({ set: { id: sql`${receiptAccountMappings.id}` } });
 }
 export function pending(context: DbExecutor = db) {
   return context
@@ -104,6 +163,13 @@ export const list = (context: DbExecutor = db) =>
     .orderBy(desc(accurateReceipts.createdAt));
 export const find = (id: string, context: DbExecutor = db) =>
   context.query.accurateReceipts.findFirst({ where: eq(accurateReceipts.id, id) });
+export function forInvoice(invoiceId: string, context: DbExecutor = db) {
+  return context
+    .select()
+    .from(accurateReceipts)
+    .where(eq(accurateReceipts.invoiceId, invoiceId))
+    .orderBy(accurateReceipts.receiptSequence, accurateReceipts.createdAt);
+}
 export function lock(id: string, context: DbExecutor) {
   return context.select().from(accurateReceipts).where(eq(accurateReceipts.id, id)).for('update');
 }
@@ -155,6 +221,7 @@ export async function saveMapping(
         feeAccountId: data.feeAccountId,
         feeAccountNo: data.feeAccountNo,
         feeAccountName: data.feeAccountName,
+        rateBps: data.rateBps,
         version: data.version,
         updatedAt: new Date(),
       },

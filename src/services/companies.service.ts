@@ -10,7 +10,7 @@ import { connectionFromRow } from './accurate-connection.service.js';
 
 export async function listCompanies() {
   const [rows, configs] = await Promise.all([branches.listManaged(), connections.list()]);
-  return rows.map(({ hasHistory, ...branch }) => {
+  return rows.map(({ hasHistory, hasDeletedUploads: _hasDeletedUploads, ...branch }) => {
     const row =
       configs.find((value) => value.id === companyConnectionId(branch.id)) ??
       (!branch.centerId.startsWith('company:')
@@ -70,7 +70,7 @@ export async function createCompany(name: string, actorId: string) {
 export async function deleteCompany(id: string, confirmationName: string, actorId: string) {
   return withTransaction(async (tx) => {
     const [branch] = await branches.lockById(id, tx);
-    if (!branch) throw new HttpError(404, 'Perusahaan tidak ditemukan.');
+    if (!branch?.active) throw new HttpError(404, 'Perusahaan tidak ditemukan.');
     if (branch.name !== confirmationName)
       throw new HttpError(400, 'Nama konfirmasi harus sama persis dengan nama perusahaan.');
     const current = (await branches.listManaged(tx)).find((row) => row.id === id);
@@ -79,17 +79,55 @@ export async function deleteCompany(id: string, confirmationName: string, actorI
         409,
         'Perusahaan memiliki riwayat upload atau transaksi. Data tersebut harus dipertahankan sehingga perusahaan tidak dapat dihapus.',
       );
-    await branches.removeCompany(id, tx);
+    await branches.removeCompany(id, tx, !!current?.hasDeletedUploads);
     await audits.create(
       {
         id: randomUUID(),
         actorId,
         action: 'company.delete',
         entityId: id,
-        details: { name: branch.name, localSettingsRemoved: true },
+        details: {
+          name: branch.name,
+          localSettingsRemoved: true,
+          deletedUploadsRetained: !!current?.hasDeletedUploads,
+        },
       },
       tx,
     );
     return { ok: true };
+  });
+}
+
+export async function renameCompany(
+  id: string,
+  name: string,
+  expectedName: string,
+  actorId: string,
+) {
+  return withTransaction(async (tx) => {
+    await users.lockForBootstrap(tx);
+    const [actor] = await users.lockByIds([actorId], tx);
+    if (!actor?.active || actor.role !== 'super_admin')
+      throw new HttpError(403, 'Akses pengguna berubah. Muat ulang halaman.');
+    const [branch] = await branches.lockById(id, tx);
+    if (!branch?.active) throw new HttpError(404, 'Perusahaan tidak ditemukan.');
+    if (branch.name !== expectedName)
+      throw new HttpError(409, 'Nama perusahaan sudah berubah. Muat ulang sebelum menyimpan.');
+    if ((await branches.findByName(name, tx)).some((row) => row.id !== id))
+      throw new HttpError(409, 'Nama perusahaan sudah digunakan. Gunakan nama lain.');
+    if (branch.name !== name) {
+      await branches.updateById({ name }, id, tx);
+      await audits.create(
+        {
+          id: randomUUID(),
+          actorId,
+          action: 'company.rename',
+          entityId: id,
+          details: { previousName: branch.name, name },
+        },
+        tx,
+      );
+    }
+    return { id, name };
   });
 }

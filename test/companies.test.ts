@@ -1,6 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID, createHmac } from 'node:crypto';
+import { and, eq } from 'drizzle-orm';
 import { createTestDatabase, closeTestDatabases } from './helpers/mysql-database.js';
 
 process.env.DATABASE_URL = await createTestDatabase();
@@ -9,9 +10,18 @@ process.env.ENCRYPTION_KEY = randomBytes(32).toString('hex');
 process.env.RUN_WORKER = 'false';
 const { db, closeDb } = await import('../src/db/index.js');
 const { migrate } = await import('../src/db/migrate.js');
-const { branches, invoices, integrationConfigs, accurateDestinations } =
-  await import('../src/db/schema/index.js');
-const { createCompany, deleteCompany, listCompanies } =
+const {
+  branches,
+  invoices,
+  integrationConfigs,
+  accurateDestinations,
+  importBatches,
+  importFiles,
+  importRows,
+  auditLogs,
+  user,
+} = await import('../src/db/schema/index.js');
+const { createCompany, deleteCompany, listCompanies, renameCompany } =
   await import('../src/services/companies.service.js');
 const { configureConnection, getSettings, testConnection } =
   await import('../src/services/settings.service.js');
@@ -96,6 +106,23 @@ globalThis.fetch = async (input, init) => {
 };
 before(async () => {
   await migrate();
+  await db.insert(user).values([
+    { id: 'admin', name: 'Admin', email: 'admin@example.test', role: 'super_admin', active: true },
+    {
+      id: 'finance',
+      name: 'Finance',
+      email: 'finance@example.test',
+      role: 'finance',
+      active: true,
+    },
+    {
+      id: 'suspended',
+      name: 'Suspended',
+      email: 'suspended@example.test',
+      role: 'super_admin',
+      active: false,
+    },
+  ]);
   await db.insert(branches).values({
     id: 'legacy',
     name: 'Existing Company',
@@ -241,25 +268,23 @@ test('invoice enqueue and worker delivery honor the company connection while the
     syncStatus: 'PENDING',
   };
   await db.insert(invoices).values(invoice);
-  await db
-    .insert(accurateDeliveries)
-    .values({
-      invoiceId: invoice.id,
-      branchId: company.id,
-      databaseId: '301',
-      targetBranchId: '301',
-      sourceVersion: invoice.version,
-      requestedNumber: invoice.number,
-      payload: {
-        number: invoice.number,
-        customerNo: 'MPA-B',
-        transDate: '19/11/2026',
-        currencyCode: 'IDR',
-        branchId: '301',
-        'detailItem[0].unitPrice': String(invoice.total),
-      },
-      expectedTotal: invoice.total,
-    });
+  await db.insert(accurateDeliveries).values({
+    invoiceId: invoice.id,
+    branchId: company.id,
+    databaseId: '301',
+    targetBranchId: '301',
+    sourceVersion: invoice.version,
+    requestedNumber: invoice.number,
+    payload: {
+      number: invoice.number,
+      customerNo: 'MPA-B',
+      transDate: '19/11/2026',
+      currencyCode: 'IDR',
+      branchId: '301',
+      'detailItem[0].unitPrice': String(invoice.total),
+    },
+    expectedTotal: invoice.total,
+  });
   await configureConnection('accurate', { enabled: false }, 'admin');
   await enqueue(invoice.id, 'admin');
   assert.equal(await processOne(), true);
@@ -276,4 +301,175 @@ test('concurrent duplicate company registration cannot create duplicate names', 
   ]);
   assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
   assert.equal(results.filter((result) => result.status === 'rejected').length, 1);
+});
+
+test('deleted-only preview uploads allow company removal while preserving source records and audit history', async () => {
+  const company = await createCompany('Deleted uploads only', 'admin');
+  const batchId = randomUUID(),
+    fileId = randomUUID(),
+    rowId = randomUUID();
+  await db
+    .insert(importBatches)
+    .values({ id: batchId, branchId: company.id, uploaderId: 'admin', status: 'DELETED' });
+  await db
+    .insert(importFiles)
+    .values({
+      id: fileId,
+      batchId,
+      name: 'test.pdf',
+      storedName: 'retained-test.pdf',
+      hash: 'test-hash',
+      size: 1,
+      format: 'PDF',
+    });
+  const candidate = {
+    sourceId: 'test-source',
+    number: 'TEST-1',
+    customer: 'Test',
+    customerId: 'TEST',
+    date: '2026-11-26',
+    dueDate: null,
+    businessStatus: 'UNKNOWN' as const,
+    currency: 'IDR',
+    subtotal: 0,
+    discount: 0,
+    tax: 0,
+    total: 0,
+    totalPaid: 0,
+    outstanding: 0,
+    items: [],
+    payments: [],
+    benefits: [],
+    packageName: null,
+    sourceFormat: 'PDF' as const,
+    warnings: [],
+    errors: [],
+  };
+  await db.insert(importRows).values({ id: rowId, batchId, fileId, position: 0, candidate });
+  const listed = (await listCompanies()).find((row) => row.id === company.id);
+  assert.ok(listed);
+  assert.equal(listed?.canDelete, true);
+  assert.equal(listed.deleteReason, null);
+  assert.equal(listed.connection.enabled, false);
+  assert.equal(listed.connection.hasApiToken, false);
+  await deleteCompany(company.id, company.name, 'admin');
+  assert.equal(
+    (await listCompanies()).some((row) => row.id === company.id),
+    false,
+  );
+  const branchRepo = await import('../src/repositories/branches.repository.js');
+  assert.equal(
+    (await branchRepo.list()).some((row) => row.id === company.id),
+    false,
+  );
+  assert.equal((await branchRepo.findById(company.id))?.active, false);
+  assert.equal(
+    (await db.query.importBatches.findFirst({ where: eq(importBatches.id, batchId) }))?.branchId,
+    company.id,
+  );
+  assert.equal(
+    (await db.query.importFiles.findFirst({ where: eq(importFiles.id, fileId) }))?.storedName,
+    'retained-test.pdf',
+  );
+  assert.deepEqual(
+    (await db.query.importRows.findFirst({ where: eq(importRows.id, rowId) }))?.candidate,
+    candidate,
+  );
+  assert.equal(
+    await db.query.integrationConfigs.findFirst({
+      where: eq(integrationConfigs.id, companyConnectionId(company.id)),
+    }),
+    undefined,
+  );
+  const audit = await db.query.auditLogs.findFirst({
+    where: and(eq(auditLogs.entityId, company.id), eq(auditLogs.action, 'company.delete')),
+  });
+  assert.equal(audit?.action, 'company.delete');
+  await assert.rejects(renameCompany(company.id, 'Restore?', company.name, 'admin'), {
+    status: 404,
+  });
+  await assert.rejects(configureConnection('accurate', { enabled: true }, 'admin', company.id), {
+    status: 404,
+  });
+  const replacement = await createCompany(company.name, 'admin');
+  assert.notEqual(replacement.id, company.id);
+  assert.equal((await branchRepo.findById(company.id))?.active, false);
+});
+
+test('active, archived or previously submitted uploads still prevent company deletion', async () => {
+  for (const status of ['PREVIEW', 'ARCHIVED', 'SUBMITTED', 'DELETED']) {
+    const company = await createCompany('Protected uploads ' + status, 'admin');
+    await db.insert(importBatches).values({
+      id: randomUUID(),
+      branchId: company.id,
+      uploaderId: 'admin',
+      status,
+      ...(status === 'DELETED' ? { submittedAt: new Date(), submittedBy: 'admin' } : {}),
+    });
+    assert.equal((await listCompanies()).find((row) => row.id === company.id)?.canDelete, false);
+    await assert.rejects(deleteCompany(company.id, company.name, 'admin'), { status: 409 });
+  }
+});
+
+test('renaming a used company changes only its name and rejects stale names, duplicates and revoked access', async () => {
+  const company = (await listCompanies()).find((row) => row.name === 'Company B');
+  assert.ok(company);
+  const original = await db.query.branches.findFirst({ where: eq(branches.id, company.id) });
+  const config = await db.query.integrationConfigs.findFirst({
+    where: eq(integrationConfigs.id, companyConnectionId(company.id)),
+  });
+  const destination = await db.query.accurateDestinations.findFirst({
+    where: eq(accurateDestinations.branchId, company.id),
+  });
+  const invoice = await db.query.invoices.findFirst({ where: eq(invoices.branchId, company.id) });
+  assert.ok(invoice);
+  await assert.rejects(renameCompany(company.id, 'Denied', company.name, 'finance'), {
+    status: 403,
+  });
+  await assert.rejects(renameCompany(company.id, 'Denied', company.name, 'suspended'), {
+    status: 403,
+  });
+  await assert.rejects(renameCompany(company.id, 'existing company', company.name, 'admin'), {
+    status: 409,
+  });
+  await renameCompany(company.id, 'Company B Updated', company.name, 'admin');
+  assert.deepEqual(await db.query.branches.findFirst({ where: eq(branches.id, company.id) }), {
+    ...original,
+    name: 'Company B Updated',
+  });
+  assert.deepEqual(
+    await db.query.integrationConfigs.findFirst({
+      where: eq(integrationConfigs.id, companyConnectionId(company.id)),
+    }),
+    config,
+  );
+  assert.deepEqual(
+    await db.query.accurateDestinations.findFirst({
+      where: eq(accurateDestinations.branchId, company.id),
+    }),
+    destination,
+  );
+  assert.deepEqual(
+    await db.query.invoices.findFirst({ where: eq(invoices.id, invoice.id) }),
+    invoice,
+  );
+  await assert.rejects(renameCompany(company.id, 'Stale edit', company.name, 'admin'), {
+    status: 409,
+  });
+  await assert.rejects(deleteCompany(company.id, company.name, 'admin'), { status: 400 });
+  assert.equal((await listCompanies()).find((row) => row.id === company.id)?.canDelete, false);
+  const audit = await db.query.auditLogs.findFirst({
+    where: eq(auditLogs.action, 'company.rename'),
+  });
+  assert.deepEqual(audit?.details, { previousName: company.name, name: 'Company B Updated' });
+});
+
+test('concurrent company rename and creation cannot reserve the same normalized name', async () => {
+  const company = await createCompany('Concurrent rename source', 'admin');
+  const results = await Promise.allSettled([
+    renameCompany(company.id, 'Concurrent rename target', company.name, 'admin'),
+    createCompany('Concurrent rename target', 'admin'),
+  ]);
+  assert.equal(results.filter((row) => row.status === 'fulfilled').length, 1);
+  assert.equal(results.filter((row) => row.status === 'rejected').length, 1);
 });

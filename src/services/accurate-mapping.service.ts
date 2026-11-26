@@ -156,6 +156,7 @@ export async function saveRowMapping(
           ...row.candidate,
           accurateSelection: selection,
           accountingReviewedAt: undefined,
+          reviewException: undefined,
         },
       },
       rowId,

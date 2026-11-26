@@ -1,6 +1,7 @@
 import { Worker } from 'node:worker_threads';
 import type { ImportCandidate } from '../../types/import.types.js';
 import { allocateTax, emptyCandidate } from '../import-validation.js';
+import { readBenefitTable, type BenefitRow } from './benefit-table.js';
 import { calculatePackage } from '../package-calculation.js';
 import { chargeableItems } from '../redemption.js';
 export type PdfToken = { text: string; x: number; y: number; width?: number; confidence?: number };
@@ -9,7 +10,7 @@ export type PdfPage = {
   tokens: PdfToken[];
   extraction?: 'text' | 'ocr';
   confidence?: number;
-  benefitRows?: { name: string; price: number; quantity: number; discountPercent: number }[];
+  benefitRows?: BenefitRow[];
   benefitTableDetected?: boolean;
   benefitTableComplete?: boolean;
 };
@@ -57,19 +58,21 @@ function allocateInvoiceItemTax(candidate: ImportCandidate) {
   );
   candidate.items = candidate.items.map((item, index) => ({ ...item, tax: taxes[index] }));
 }
-function splitBenefitTable(
-  c: ImportCandidate,
-  entries: { name: string; price: number; quantity: number; discountPercent: number }[],
-) {
-  if (!entries.length || c.items.length !== 1 || !/package/i.test(c.items[0].name)) return false;
+function splitBenefitTable(c: ImportCandidate, entries: BenefitRow[]) {
+  if (!entries.length || c.items.length !== 1 || c.items[0].redeemed) return false;
   const parent = { ...c.items[0], tax: c.tax };
-  const nets = entries.map((i) => (i.price * (100 - i.discountPercent)) / 100);
+  const nets = entries.map((i) =>
+    i.discountAmount !== undefined
+      ? i.price - i.discountAmount
+      : (i.price * (100 - i.discountPercent!)) / 100,
+  );
   const taxes = allocateTax(nets, c.tax);
   const calculation = calculatePackage(
     entries.map((b, i) => ({
       name: b.name,
       quantity: b.quantity,
       discountPercent: b.discountPercent,
+      discountAmount: b.discountAmount,
       unitPrice: b.price / b.quantity,
       tax: taxes[i],
     })),
@@ -80,7 +83,10 @@ function splitBenefitTable(
   c.benefits = entries.map((b) => ({
     ...b,
     unitPrice: b.price / b.quantity,
-    netAmount: (b.price * (100 - b.discountPercent)) / 100,
+    netAmount:
+      b.discountAmount !== undefined
+        ? b.price - b.discountAmount
+        : (b.price * (100 - b.discountPercent!)) / 100,
   }));
   c.packageParents = [parent];
   c.packageName = parent.name;
@@ -359,6 +365,38 @@ function parseGroup(pages: PdfPage[]): ImportCandidate {
     ocrTables.length > 0 &&
     ocrTables.every((p) => p.benefitTableComplete) &&
     splitBenefitTable(c, extractedBenefits);
+  const structuredTables = pages
+    .filter((page) => page.extraction !== 'ocr' && !hasUsageBenefitTable(page.tokens))
+    .map((page) =>
+      readBenefitTable(page.tokens.map((token) => ({ ...token, text: clean(token.text) }))),
+    )
+    .filter((table) => table !== null);
+  const structuredHandled = !automaticBenefits && structuredTables.length > 0;
+  if (structuredHandled) {
+    const entries = structuredTables.flatMap((table) => table.rows);
+    if (c.items.length === 1 && !c.items[0].redeemed) {
+      c.packageParents = [{ ...c.items[0], tax: c.tax }];
+      c.packageName = c.items[0].name;
+    }
+    if (structuredTables.every((table) => table.complete))
+      automaticBenefits = splitBenefitTable(c, entries);
+    if (!automaticBenefits) {
+      c.benefits = entries.map((row) => ({
+        ...row,
+        unitPrice: row.price / row.quantity,
+        netAmount:
+          row.discountAmount !== undefined
+            ? row.price - row.discountAmount
+            : (row.price * (100 - row.discountPercent!)) / 100,
+      }));
+      c.errors.push(
+        c.items.length !== 1
+          ? 'Tabel Benefit tidak dapat dipasangkan ke satu item induk. Periksa dokumen sumber.'
+          : 'Rincian tabel Benefit belum terbaca lengkap. Lengkapi semua layanan sesuai dokumen sumber.',
+      );
+      allocateInvoiceItemTax(c);
+    }
+  }
   const tablePage =
     pages.find(
       (p) => p.tokens.some((t) => /^Benefit$/i.test(t.text)) && !hasUsageBenefitTable(p.tokens),
@@ -381,7 +419,7 @@ function parseGroup(pages: PdfPage[]): ImportCandidate {
       : tablePage.width * 0.2;
   const priceRight = benefitDiscountHeader?.x ?? tablePage.width * 0.28;
   const nameRight = benefitTypeHeader ? benefitTypeHeader.x - 6 : tablePage.width * 0.15;
-  if (benefitHeader && !automaticBenefits) {
+  if (benefitHeader && !automaticBenefits && !structuredHandled) {
     const benefitTokens = tableTokens.map((token) => {
       // PDF text extraction can merge the Type and Price cells into one token.
       const merged = token.text.match(/^(?:Service|Product)[\s(|]*(\d[\d.]*(?:,00)?)[|)]*$/i);
@@ -505,7 +543,7 @@ function parseGroup(pages: PdfPage[]): ImportCandidate {
         if (isOcr && packageMatched) c.packageParents = c.items.map((item) => ({ ...item }));
       }
     }
-  } else if (!automaticBenefits) {
+  } else if (!automaticBenefits && !structuredHandled) {
     allocateInvoiceItemTax(c);
     if (isOcr && c.items.some((item) => /package/i.test(item.name))) {
       c.packageParents = c.items
@@ -521,19 +559,32 @@ function parseGroup(pages: PdfPage[]): ImportCandidate {
       );
   }
   const paymentBoundary = tokens.find((t) => /Tax Based on Collection/i.test(t.text));
-  for (const row of rows(
-    tokens.filter((t) => t.y < header.y - 5 && t.y > (paymentBoundary?.y ?? subtotalLabel.y)),
-  )) {
+  const paymentTokens = tokens.filter(
+    (t) => t.y < header.y - 5 && t.y > (paymentBoundary?.y ?? subtotalLabel.y),
+  );
+  const paymentRows = rows(paymentTokens).flatMap((row) => {
     const paidOn = row.tokens.find(
       (t) => /^\d{2}\/\d{2}\/\d{4}(?:\s+\d[\d.]*(?:,00)?)?$/.test(t.text) && t.x > split,
     );
     const amount = row.tokens.find((t) => t.x > split + 50 && /^(?:IDR)?\d[\d.]*$/.test(t.text));
     const mergedPayment = paidOn?.text.match(/^(\d{2}\/\d{2}\/\d{4})\s+(\d[\d.]*(?:,00)?)$/);
     const amountText = amount?.text ?? mergedPayment?.[2];
-    if (!paidOn || !amountText) continue;
+    return paidOn && amountText ? [{ row, paidOn, amountText, mergedPayment }] : [];
+  });
+  for (const { row, paidOn, amountText, mergedPayment } of paymentRows) {
     const method = clean(
-      row.tokens
-        .filter((t) => t.x >= split && t.x < paidOn.x)
+      paymentTokens
+        // Wrapped labels belong to the nearest dated payment, never a neighbouring payment.
+        .filter(
+          (t) =>
+            t.x >= split &&
+            t.x < paidOn.x &&
+            Math.abs(t.y - row.y) <= 12 &&
+            paymentRows.every(
+              (other) => other.row === row || Math.abs(t.y - row.y) < Math.abs(t.y - other.row.y),
+            ),
+        )
+        .sort((a, b) => b.y - a.y || a.x - b.x)
         .map((t) => t.text)
         .join(' '),
     );
@@ -545,7 +596,9 @@ function parseGroup(pages: PdfPage[]): ImportCandidate {
           ? 'cash'
           : /card|visa|master|debit|credit/i.test(method)
             ? 'card'
-            : 'other',
+            : /bank|transfer/i.test(method)
+              ? 'bank'
+              : 'other',
       amount: rupiah(amountText),
       paidAt: `${sourceDate(mergedPayment?.[1] ?? paidOn.text)}T00:00:00+07:00`,
     });

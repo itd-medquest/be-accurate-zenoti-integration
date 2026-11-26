@@ -104,3 +104,24 @@ test(
     }
   },
 );
+
+test(
+  'raster Benefit tables accept an exact nominal discount without a percent token',
+  { timeout: 120000 },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'imp-ocr-nominal-'));
+    try {
+      const path = join(dir, 'nominal.pdf');
+      await writeFile(path, ocrReceiptPdf(true, true));
+      const [candidate] = await parsePdf(path);
+      assert.equal(candidate.items.length, 1);
+      assert.equal(candidate.items[0].quantity, 5);
+      assert.equal(candidate.items[0].discount, 6081083);
+      assert.equal(candidate.items[0].discountPercent, undefined);
+      assert.equal(candidate.total, 8250000);
+      assert.deepEqual(candidateErrors(candidate), []);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
